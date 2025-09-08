@@ -1,6 +1,5 @@
 'use client'
 
-// MUI Imports (mantidos)
 import { useState } from 'react'
 
 import { useRouter } from 'next/navigation'
@@ -11,12 +10,12 @@ import CardContent from '@mui/material/CardContent'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import Checkbox from '@mui/material/Checkbox'
 import Button from '@mui/material/Button'
+import Alert from '@mui/material/Alert'
 
-// Extra
+// Import corrigido
+import { supabase } from '@/libs/supabaseAuth'
 
-import { supabase } from '@/libs/supabaseAuth' // corrigido: lib/ (não libs/)
-
-const AccountDelete = () => {
+export default function AccountDelete() {
   const [checked, setChecked] = useState(false)
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
@@ -33,17 +32,16 @@ const AccountDelete = () => {
 
       const uid = u?.user?.id
 
-      if (!uid) {
-        throw new Error('Usuário não autenticado.')
-      }
+      if (!uid) throw new Error('Usuário não autenticado.')
 
+      // Marca desativação na sua tabela de perfil da web
       const { error: updErr } = await supabase
         .from('users_app')
-        .update({ deactivated_at: new Date().toISOString() })
-        .eq('id', uid)
+        .upsert({ id: uid, deactivated_at: new Date().toISOString() }, { onConflict: 'id' })
 
       if (updErr) throw updErr
 
+      // Encerra sessão
       const { error: soErr } = await supabase.auth.signOut()
 
       if (soErr) throw soErr
@@ -75,10 +73,8 @@ const AccountDelete = () => {
           {loading ? 'Desativando…' : 'Desativar conta'}
         </Button>
 
-        {errorMsg ? <span className='text-error'>{errorMsg}</span> : null}
+        {errorMsg ? <Alert severity='error'>{errorMsg}</Alert> : null}
       </CardContent>
     </Card>
   )
 }
-
-export default AccountDelete

@@ -1,55 +1,42 @@
-// libs/forms.js
+// src/libs/forms.js
 import { supabase } from '@/libs/supabaseAuth'
 
 const BUCKET = 'form_covers'
 
-// Normaliza extensão e decide content-type
+// Normaliza extensão e content-type
 function getExtAndContentType(file) {
-  const ext = (file.name?.split('.').pop() || '').toLowerCase()
+  const ext = (file?.name?.split('.').pop() || 'jpg').toLowerCase()
 
-  const contentType =
-    file.type ||
-    (ext === 'png'
-      ? 'image/png'
-      : ext === 'jpg' || ext === 'jpeg'
-        ? 'image/jpeg'
-        : ext === 'webp'
-          ? 'image/webp'
-          : 'application/octet-stream')
+  const contentType = file?.type || (ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg')
 
   return { ext, contentType }
 }
 
 /**
  * Upload da capa do formulário.
- * - Usa o mesmo path para upload e para assinar a URL
- * - Faz upsert = true para substituir a capa
+ * Caminho privado aceito pelas policies: <uid>/<formId>/cover.<ext>
+ * Usa upsert para evitar 409 quando substituir a capa.
  */
 export async function uploadFormCover(file, formId) {
-  // 1) Garante usuário autenticado
+  if (!file || !formId) throw new Error('Arquivo ou formId ausentes.')
+
   const { data: u, error: uErr } = await supabase.auth.getUser()
 
   if (uErr) throw uErr
-  const user = u?.user
+  const uid = u?.user?.id
 
-  if (!user) throw new Error('Não autenticado')
+  if (!uid) throw new Error('Não autenticado')
 
-  // 2) Monta caminho seguro: <uid>/<formId>/cover.<ext>
-  const ext = (file.name?.split('.').pop() || 'png').toLowerCase()
-  const fileName = `cover.${ext}`
-  const path = `${user.id}/${formId}/${fileName}`
+  const { ext, contentType } = getExtAndContentType(file)
+  const path = `${uid}/${formId}/cover.${ext}`
 
-  // 3) Faz upload (upsert exige UPDATE policy; já cobrimos)
-  const { error: upErr } = await supabase.storage.from('form_covers').upload(path, file, {
-    upsert: true,
-    cacheControl: '3600',
-    contentType: file.type || 'image/*'
-  })
+  const { error: upErr } = await supabase.storage
+    .from(BUCKET)
+    .upload(path, file, { upsert: true, cacheControl: '3600', contentType })
 
   if (upErr) throw upErr
 
-  // 4) Gera uma signed URL pra exibir a capa
-  const { data: signed, error: sErr } = await supabase.storage.from('form_covers').createSignedUrl(path, 60 * 60 * 24) // 24h
+  const { data: signed, error: sErr } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 60 * 24) // 24h
 
   if (sErr) throw sErr
 
@@ -58,36 +45,46 @@ export async function uploadFormCover(file, formId) {
 
 /**
  * upsertForm
- * - INSERT quando não houver id (NÃO envia 'id' no payload → usa DEFAULT do Postgres)
+ * - INSERT quando não houver id
  * - UPDATE quando houver id
+ * Aceita opcionalmente cover_path (se você quiser persistir depois do upload).
  */
-export async function upsertForm({ id, title, description, slug, is_published }) {
-  // usuário autenticado
-  const { data: userData, error: userErr } = await supabase.auth.getUser()
+export async function upsertForm({ id, title, description, slug, is_published, cover_path } = {}) {
+  const { data: u, error: userErr } = await supabase.auth.getUser()
 
   if (userErr) throw userErr
-  const owner = userData?.user?.id
+  const owner = u?.user?.id
 
   if (!owner) throw new Error('Usuário não autenticado')
 
   const base = {
     owner,
     title,
-    description,
-    slug,
-    is_published: !!is_published
+    description: description ?? null,
+    slug: slug ?? null,
+    is_published: !!is_published,
+    ...(cover_path ? { cover_path } : {})
   }
 
   if (!id) {
-    // INSERT → não inclua 'id' para acionar o DEFAULT (gen_random_uuid)
-    const { data, error } = await supabase.from('forms').insert(base).select('*').single()
+    // INSERT (não enviar id → usa DEFAULT do Postgres)
+    const { data, error } = await supabase
+      .from('forms')
+      .insert(base)
+      .select('id, title, slug, is_published, cover_path, owner')
+      .single()
 
     if (error) throw error
 
     return data
   } else {
-    // UPDATE → atualiza pelo id existente
-    const { data, error } = await supabase.from('forms').update(base).eq('id', id).select('*').single()
+    // UPDATE por id
+    const { data, error } = await supabase
+      .from('forms')
+      .update(base)
+      .eq('id', id)
+      .select('id, title, slug, is_published, cover_path, owner')
+      .single()
 
     if (error) throw error
 
@@ -97,59 +94,64 @@ export async function upsertForm({ id, title, description, slug, is_published })
 
 /**
  * replaceQuestions
- * - apaga e recria as questões do form mantendo a ordem
+ * - apaga e recria as questões do form, na ordem recebida
+ * No banco a coluna é 'position' (não 'order_index').
+ * Retornamos com alias 'order_index' para não quebrar sua UI.
  */
 export async function replaceQuestions(formId, questions) {
   if (!formId) throw new Error('formId vazio')
 
-  // remove todas as questões anteriores
+  // Remove todas as anteriores (RLS: apenas dono consegue)
   const { error: delErr } = await supabase.from('form_questions').delete().eq('form_id', formId)
 
   if (delErr) throw delErr
 
   const rows = (questions || []).map((q, idx) => ({
     form_id: formId,
+    position: idx, // <- coluna correta no SQL
     type: q.type,
     label: q.label,
     required: !!q.required,
-    options: q.options || null,
-    order_index: idx
+    options: q.options && q.options.length ? q.options : null
   }))
 
   if (!rows.length) return []
 
-  const { data, error } = await supabase.from('form_questions').insert(rows).select('*')
+  const { data, error } = await supabase
+    .from('form_questions')
+    .insert(rows)
+    .select('id, type, label, required, options, order_index:position') // alias p/ UI
 
   if (error) throw error
 
-  // ordena no client para devolver em ordem, caso precise
+  // já vem ordenado pelo array; se quiser garantir:
   return [...data].sort((a, b) => a.order_index - b.order_index)
 }
 
 /**
  * getFormBySlug
- * - retorna form + questões
+ * - retorna form + questões (só permite visualizar se publicado)
+ * Evita 409 com limit(1) + maybeSingle().
  */
 export async function getFormBySlug(slug) {
   if (!slug) throw new Error('Slug ausente.')
 
-  // 1) Busca o formulário
   const { data: form, error: fe } = await supabase
     .from('forms')
     .select('id, title, description, cover_path, slug, is_published')
     .eq('slug', slug)
+    .limit(1)
     .maybeSingle()
 
   if (fe) throw fe
   if (!form) throw new Error('Formulário não encontrado.')
   if (!form.is_published) throw new Error('Formulário não publicado.')
 
-  // 2) Busca as perguntas visíveis ao público (RLS cuida do filtro)
   const { data: questions, error: qe } = await supabase
     .from('form_questions')
-    .select('id, type, label, required, options, order_index')
+    .select('id, type, label, required, options, order_index:position')
     .eq('form_id', form.id)
-    .order('order_index', { ascending: true })
+    .order('position', { ascending: true })
 
   if (qe) throw qe
 
@@ -158,33 +160,73 @@ export async function getFormBySlug(slug) {
 
 /**
  * submitForm
- * - cria uma response e grava answers (value como jsonb)
+ * - cria (ou reaproveita) a submissão do usuário e grava respostas
+ * Usa as tabelas: form_submissions + form_answers
  */
 export async function submitForm({ formId, answersMap }) {
-  const { data: userData } = await supabase.auth.getUser()
-  const respondent = userData?.user?.id || null
+  if (!formId) throw new Error('formId ausente.')
+  const { data: u, error: uErr } = await supabase.auth.getUser()
 
-  const { data: response, error: insErr } = await supabase
-    .from('form_responses')
-    .insert({ form_id: formId, respondent_id: respondent, status: 'submitted' })
+  if (uErr) throw uErr
+  const uid = u?.user?.id || null
+
+  // 1) Pega submissão existente do usuário para este form (1 por usuário)
+  const { data: existing, error: qErr } = await supabase
+    .from('form_submissions')
     .select('id')
-    .single()
+    .eq('form_id', formId)
+    .eq('respondent_user_id', uid)
+    .limit(1)
+    .maybeSingle()
 
-  if (insErr) throw insErr
+  if (qErr) throw qErr
 
-  const answers = Object.entries(answersMap).map(([question_id, value]) => ({
-    response_id: response.id,
-    question_id,
+  let submissionId = existing?.id
 
-    // jsonb: mantém arrays/objetos; converte primitivo para string
-    value: Array.isArray(value) ? value : typeof value === 'object' && value !== null ? value : String(value ?? '')
-  }))
+  // 2) Se não existir, cria
+  if (!submissionId) {
+    const { data: sub, error: sErr } = await supabase
+      .from('form_submissions')
+      .insert({ form_id: formId, respondent_user_id: uid })
+      .select('id')
+      .single()
 
-  if (answers.length) {
-    const { error: ansErr } = await supabase.from('form_answers').insert(answers)
-
-    if (ansErr) throw ansErr
+    if (sErr) throw sErr
+    submissionId = sub.id
   }
 
-  return response
+  // 3) Monta respostas (jsonb)
+  const entries = Object.entries(answersMap || {})
+
+  if (!entries.length) return { submissionId }
+
+  const toJsonValue = v => {
+    if (Array.isArray(v)) return v
+    if (v === null || v === undefined) return null
+    if (typeof v === 'number' || typeof v === 'boolean') return v
+    if (typeof v === 'object') return v // já é JSON
+
+    return String(v) // string/others
+  }
+
+  const items = entries.map(([question_id, value]) => ({
+    submission_id: submissionId,
+    form_id: formId,
+    question_id,
+    value: toJsonValue(value)
+  }))
+
+  // 4) Insere respostas (sem upsert para manter “uma vez só”)
+  const { error: aErr } = await supabase.from('form_answers').insert(items)
+
+  if (aErr) {
+    // Se já respondeu mesmas perguntas: unique(submission_id, question_id)
+    if (aErr.code === '23505') {
+      throw new Error('Você já enviou este formulário.')
+    }
+
+    throw aErr
+  }
+
+  return { submissionId }
 }

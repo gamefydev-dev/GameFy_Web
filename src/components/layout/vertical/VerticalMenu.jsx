@@ -53,30 +53,27 @@ const VerticalMenu = ({ scrollMenu }) => {
         menuSectionStyles={menuSectionStyles(theme)}
       >
         {/* DASHBOARD */}
-        <SubMenu
-          label='Dashboard'
-          icon={<i className='ri-home-smile-line' />}
-          suffix={<Chip label='5' size='small' color='error' />}
-        >
-          <MenuItem href='/dashboard/academico'>Acadêmico</MenuItem>
-          <MenuItem href='/dashboard/metricas'>Métricas</MenuItem>
+        <SubMenu label='Dashboard' icon={<i className='ri-home-smile-line' />}>
+          <MenuItem href='/'>Geral</MenuItem>
+          <MenuItem href='/academico'>Acadêmico</MenuItem>
+          <MenuItem href='/metricas'>Métricas</MenuItem>
         </SubMenu>
 
         {/* APPS & PÁGINAS (internas do GameFy) */}
         <MenuSection label='Apps & Páginas'>
-          <MenuItem href='/app/eventos' icon={<i className='ri-calendar-event-line' />}>
+          <MenuItem href='/eventos' icon={<i className='ri-calendar-event-line' />}>
             Eventos & Ingressos
           </MenuItem>
-          <MenuItem href='/app/grupos' icon={<i className='ri-team-line' />}>
+          <MenuItem href='/grupos' icon={<i className='ri-team-line' />}>
             Grupos
           </MenuItem>
-          <MenuItem href='/app/avaliacoes' icon={<i className='ri-star-smile-line' />}>
+          <MenuItem href='/avaliacoes' icon={<i className='ri-star-smile-line' />}>
             Avaliações
           </MenuItem>
-          <MenuItem href='/app/calendario' icon={<i className='ri-calendar-line' />}>
+          <MenuItem href='/calendario' icon={<i className='ri-calendar-line' />}>
             Calendário
           </MenuItem>
-          <MenuItem href='/app/kanban' icon={<i className='ri-drag-drop-line' />}>
+          <MenuItem href='/kanban' icon={<i className='ri-drag-drop-line' />}>
             Kanban
           </MenuItem>
 

@@ -198,11 +198,6 @@ const UserDropdown = () => {
                     <Typography color='text.primary'>Meu Perfil</Typography>
                   </MenuItem>
 
-                  <MenuItem className='gap-3' onClick={e => handleDropdownClose(e, '/configuracoes')}>
-                    <i className='ri-settings-4-line' />
-                    <Typography color='text.primary'>Configurações</Typography>
-                  </MenuItem>
-
                   <div className='flex items-center plb-2 pli-4'>
                     <Button
                       fullWidth

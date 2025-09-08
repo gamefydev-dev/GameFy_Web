@@ -3,7 +3,7 @@
 // React
 import { useEffect, useRef, useState } from 'react'
 
-// MUI Imports (mantidos)
+// MUI
 import Grid from '@mui/material/Grid'
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
@@ -15,20 +15,24 @@ import InputLabel from '@mui/material/InputLabel'
 import Select from '@mui/material/Select'
 import MenuItem from '@mui/material/MenuItem'
 import Chip from '@mui/material/Chip'
+import Snackbar from '@mui/material/Snackbar'
+import Alert from '@mui/material/Alert'
 
-// Supabase helpers (CORRIGIDO: lib/ e não libs/)
+// Supabase helpers (corrigido: lib/ e não libs/)
 import { supabase, getUser } from '@/libs/supabaseAuth'
 
 const AVATAR_BUCKET = 'avatars_admin'
 const SIGNED_URL_EXPIRY = 60 * 60 * 24 * 7 // 7 dias
 const FALLBACK_AVATAR = '/images/avatars/1.png'
+const MAX_FILE_BYTES = 800 * 1024
 
-// Estado inicial apenas para placeholders visuais (mantido o shape)
+const languageOptions = ['Portuguese', 'English', 'Spanish', 'French', 'German']
+
 const initialData = {
   firstName: '',
   lastName: '',
   email: '',
-  organization: '', // usaremos p/ exibir a categoria/role
+  organization: '',
   phoneNumber: '',
   address: '',
   state: '',
@@ -39,12 +43,7 @@ const initialData = {
   currency: 'brl'
 }
 
-const languageData = ['Portuguese', 'English', 'Spanish', 'French', 'German']
-
-// Normaliza o valor salvo no banco para um caminho válido do Storage:
-// - se já for http(s), retorna como está (URL direta)
-// - se vier com "avatars_admin/..." remove o prefixo do bucket
-// - remove barras iniciais redundantes
+// Normaliza o valor salvo no banco para um caminho válido do Storage
 function normalizeAvatarPath(raw) {
   if (!raw) return ''
   const val = String(raw).trim()
@@ -57,45 +56,41 @@ function normalizeAvatarPath(raw) {
   return p
 }
 
-// Tenta gerar uma URL utilizável a partir do caminho no bucket
+// Assina URL ou cai para public URL se o bucket/objeto for público
 async function getAvatarUrl(path) {
-  // Se já é URL absoluta, devolve
+  if (!path) return FALLBACK_AVATAR
   if (/^https?:\/\//i.test(path)) return path
 
-  // 1) Tenta Signed URL (bucket privado com RLS)
   const { data: signed, error } = await supabase.storage.from(AVATAR_BUCKET).createSignedUrl(path, SIGNED_URL_EXPIRY)
 
   if (!error && signed?.signedUrl) return signed.signedUrl
 
-  // 2) Fallback para Public URL (se o objeto/bucket for público)
   const { data: pub } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path)
-
-  // cache-busting leve para evitar imagem antiga
   const bust = `cb=${Date.now()}`
 
   return pub?.publicUrl ? `${pub.publicUrl}${pub.publicUrl.includes('?') ? '&' : '?'}${bust}` : FALLBACK_AVATAR
 }
 
-const AccountDetails = () => {
-  // States (mantidos)
+export default function AccountDetails() {
   const [formData, setFormData] = useState(initialData)
-  const [fileInput, setFileInput] = useState('')
   const [imgSrc, setImgSrc] = useState(FALLBACK_AVATAR)
   const [language, setLanguage] = useState(['Portuguese'])
 
-  // Supabase control
   const [userId, setUserId] = useState('')
   const [avatarPath, setAvatarPath] = useState('')
+  const [fileInput, setFileInput] = useState('')
+
+  const [saving, setSaving] = useState(false)
+  const [snack, setSnack] = useState({ open: false, msg: '', sev: 'success' })
   const fileRef = useRef(null)
 
-  // Helpers visuais (mantidos)
-  const handleDelete = value => setLanguage(current => current.filter(item => item !== value))
-  const handleChange = event => setLanguage(event.target.value)
-  const handleFormChange = (field, value) => setFormData(prev => ({ ...prev, [field]: value }))
+  const handleDeleteChip = value => setLanguage(current => current.filter(item => item !== value))
+  const handleChangeChips = event => setLanguage(event.target.value)
+  const setField = (field, value) => setFormData(prev => ({ ...prev, [field]: value }))
 
-  // Carregar perfil do Supabase
+  // Carrega dados do usuário + users_app
   useEffect(() => {
-    const load = async () => {
+    ;(async () => {
       try {
         const { data: u } = await getUser()
         const user = u?.user
@@ -104,7 +99,6 @@ const AccountDetails = () => {
 
         setUserId(user.id)
 
-        // Busca users_app
         const { data: profile } = await supabase
           .from('users_app')
           .select('name, role, avatar_url, contact, address, state, zip_code, country, language, timezone, currency')
@@ -114,10 +108,9 @@ const AccountDetails = () => {
         const fullName =
           profile?.name || user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || ''
 
-        const [firstName, ...lastParts] = fullName.split(' ')
+        const [firstName, ...lastParts] = (fullName || '').split(' ')
         const lastName = lastParts.join(' ')
 
-        // Monta estado mantendo o mesmo shape visual
         setFormData({
           firstName: firstName || '',
           lastName: lastName || '',
@@ -128,96 +121,112 @@ const AccountDetails = () => {
           state: profile?.state || '',
           zipCode: profile?.zip_code || '',
           country: profile?.country || 'br',
-          language: profile?.language || 'portuguese',
+          language: Array.isArray(profile?.language) ? profile.language[0] : profile?.language || 'Portuguese',
           timezone: profile?.timezone || 'gmt-03',
           currency: profile?.currency || 'brl'
         })
 
-        // Idiomas (chips)
         setLanguage(Array.isArray(profile?.language) ? profile.language : [profile?.language || 'Portuguese'])
 
-        // Avatar
-        const rawPath = profile?.avatar_url || user.user_metadata?.avatar_url || ''
-        const normalized = normalizeAvatarPath(rawPath)
+        const normalized = normalizeAvatarPath(profile?.avatar_url || user.user_metadata?.avatar_url || '')
 
         setAvatarPath(normalized)
-
-        if (normalized) {
-          const url = await getAvatarUrl(normalized)
-
-          setImgSrc(url)
-        } else {
-          setImgSrc(FALLBACK_AVATAR)
-        }
-      } catch {
+        setImgSrc(await getAvatarUrl(normalized))
+      } catch (e) {
         setImgSrc(FALLBACK_AVATAR)
       }
-    }
-
-    load()
+    })()
   }, [])
 
-  // Upload/preview (mantido o estilo)
+  // Upload e preview
   const handleFileInputChange = async ev => {
     const f = ev.target.files?.[0]
 
     if (!f || !userId) return
 
-    // Preview imediato
+    if (f.size > MAX_FILE_BYTES) {
+      setSnack({ open: true, msg: 'Imagem acima de 800KB', sev: 'error' })
+      if (fileRef.current) fileRef.current.value = ''
+
+      return
+    }
+
     const reader = new FileReader()
 
     reader.onload = () => setImgSrc(reader.result || FALLBACK_AVATAR)
     reader.readAsDataURL(f)
 
-    // Envia para Storage
-    const ext = f.name.split('.').pop()
-    const fileName = `avatar.${ext || 'png'}`
-    const path = `${userId}/${fileName}`
+    const ext = (f.name.split('.').pop() || 'png').toLowerCase()
+    const path = `${userId}/avatar.${ext}`
 
     const { error: upErr } = await supabase.storage
       .from(AVATAR_BUCKET)
       .upload(path, f, { upsert: true, cacheControl: '3600' })
 
-    if (upErr) return
+    if (upErr) {
+      setSnack({ open: true, msg: 'Falha ao enviar imagem', sev: 'error' })
+
+      return
+    }
 
     setAvatarPath(path)
-
-    // Salva no perfil (sempre caminho relativo!)
-    await supabase.from('users_app').update({ avatar_url: path }).eq('id', userId)
-
-    // Atualiza preview com URL utilizável
     const url = await getAvatarUrl(path)
 
     setImgSrc(url)
+
+    // Salva o caminho relativo no users_app
+    await supabase.from('users_app').upsert({ id: userId, avatar_url: path }, { onConflict: 'id' })
+    setSnack({ open: true, msg: 'Foto atualizada', sev: 'success' })
   }
 
-  const handleFileInputReset = () => {
+  const handleFileInputReset = async () => {
     setFileInput('')
     setImgSrc(FALLBACK_AVATAR)
     if (fileRef.current) fileRef.current.value = ''
+    if (!userId) return
+    await supabase.from('users_app').update({ avatar_url: null }).eq('id', userId)
+    setAvatarPath('')
   }
 
-  // Salvar (mantendo o mesmo botão “Save Changes”)
   const handleSave = async e => {
     e.preventDefault()
+    if (!userId) return
 
-    const name = [formData.firstName, formData.lastName].filter(Boolean).join(' ').trim()
+    setSaving(true)
 
-    const payload = {
-      id: userId,
-      name: name || null,
-      role: formData.organization || null, // mapeando o campo "Organization" p/ categoria (professor/professora/admin)
-      contact: formData.phoneNumber || null,
-      address: formData.address || null,
-      state: formData.state || null,
-      zip_code: formData.zipCode || null,
-      country: formData.country || null,
-      language: language && language.length ? language : formData.language || null,
-      timezone: formData.timezone || null,
-      currency: formData.currency || null
+    try {
+      const name = [formData.firstName, formData.lastName].filter(Boolean).join(' ').trim() || null
+
+      const payload = {
+        id: userId,
+        name,
+        role: formData.organization || null,
+        contact: formData.phoneNumber || null,
+        address: formData.address || null,
+        state: formData.state || null,
+        zip_code: formData.zipCode || null,
+        country: formData.country || 'br',
+        language: language && language.length ? language : [formData.language || 'Portuguese'],
+        timezone: formData.timezone || 'gmt-03',
+        currency: formData.currency || 'brl',
+        avatar_url: avatarPath || null
+      }
+
+      const { error } = await supabase.from('users_app').upsert(payload, { onConflict: 'id' })
+
+      if (error) throw error
+
+      // (Opcional) manter 'profiles' em sincronia para exibir nome/role em outros pontos
+      await supabase
+        .from('profiles')
+        .upsert({ id: userId, full_name: payload.name, role: payload.role }, { onConflict: 'id' })
+
+      setSnack({ open: true, msg: 'Dados salvos!', sev: 'success' })
+    } catch {
+      setSnack({ open: true, msg: 'Erro ao salvar', sev: 'error' })
+    } finally {
+      setSaving(false)
     }
-
-    await supabase.from('users_app').upsert(payload, { onConflict: 'id' })
   }
 
   return (
@@ -234,7 +243,7 @@ const AccountDetails = () => {
                   hidden
                   type='file'
                   value={fileInput}
-                  accept='image/png, image/jpeg'
+                  accept='image/png, image/jpeg, image/gif'
                   onChange={handleFileInputChange}
                   id='account-settings-upload-image'
                 />
@@ -257,7 +266,7 @@ const AccountDetails = () => {
                 label='Nome'
                 value={formData.firstName}
                 placeholder='Seu nome'
-                onChange={e => handleFormChange('firstName', e.target.value)}
+                onChange={e => setField('firstName', e.target.value)}
               />
             </Grid>
 
@@ -267,19 +276,12 @@ const AccountDetails = () => {
                 label='Sobrenome'
                 value={formData.lastName}
                 placeholder='Seu sobrenome'
-                onChange={e => handleFormChange('lastName', e.target.value)}
+                onChange={e => setField('lastName', e.target.value)}
               />
             </Grid>
 
             <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                label='E-mail'
-                value={formData.email}
-                placeholder='voce@exemplo.com'
-                disabled
-                onChange={e => handleFormChange('email', e.target.value)}
-              />
+              <TextField fullWidth label='E-mail' value={formData.email} disabled placeholder='voce@exemplo.com' />
             </Grid>
 
             <Grid item xs={12} sm={6}>
@@ -288,7 +290,7 @@ const AccountDetails = () => {
                 label='Categoria (Professor(a)/Admin)'
                 value={formData.organization}
                 placeholder='professor | professora | admin'
-                onChange={e => handleFormChange('organization', e.target.value)}
+                onChange={e => setField('organization', e.target.value)}
               />
             </Grid>
 
@@ -298,7 +300,7 @@ const AccountDetails = () => {
                 label='Telefone/WhatsApp'
                 value={formData.phoneNumber}
                 placeholder='(xx) xxxxx-xxxx'
-                onChange={e => handleFormChange('phoneNumber', e.target.value)}
+                onChange={e => setField('phoneNumber', e.target.value)}
               />
             </Grid>
 
@@ -308,7 +310,7 @@ const AccountDetails = () => {
                 label='Endereço'
                 value={formData.address}
                 placeholder='Rua, número, bairro'
-                onChange={e => handleFormChange('address', e.target.value)}
+                onChange={e => setField('address', e.target.value)}
               />
             </Grid>
 
@@ -318,7 +320,7 @@ const AccountDetails = () => {
                 label='Estado'
                 value={formData.state}
                 placeholder='SP, RJ...'
-                onChange={e => handleFormChange('state', e.target.value)}
+                onChange={e => setField('state', e.target.value)}
               />
             </Grid>
 
@@ -329,18 +331,14 @@ const AccountDetails = () => {
                 label='CEP'
                 value={formData.zipCode}
                 placeholder='00000-000'
-                onChange={e => handleFormChange('zipCode', e.target.value)}
+                onChange={e => setField('zipCode', e.target.value)}
               />
             </Grid>
 
             <Grid item xs={12} sm={6}>
               <FormControl fullWidth>
                 <InputLabel>País</InputLabel>
-                <Select
-                  label='País'
-                  value={formData.country}
-                  onChange={e => handleFormChange('country', e.target.value)}
-                >
+                <Select label='País' value={formData.country} onChange={e => setField('country', e.target.value)}>
                   <MenuItem value='br'>Brasil</MenuItem>
                   <MenuItem value='usa'>USA</MenuItem>
                   <MenuItem value='uk'>UK</MenuItem>
@@ -356,25 +354,23 @@ const AccountDetails = () => {
                   multiple
                   label='Idioma(s)'
                   value={language}
-                  onChange={handleChange}
+                  onChange={handleChangeChips}
                   renderValue={selected => (
                     <div className='flex flex-wrap gap-2'>
                       {selected.map(value => (
                         <Chip
                           key={value}
                           clickable
-                          deleteIcon={
-                            <i className='ri-close-circle-fill' onMouseDown={event => event.stopPropagation()} />
-                          }
+                          deleteIcon={<i className='ri-close-circle-fill' onMouseDown={e => e.stopPropagation()} />}
                           size='small'
                           label={value}
-                          onDelete={() => handleDelete(value)}
+                          onDelete={() => handleDeleteChip(value)}
                         />
                       ))}
                     </div>
                   )}
                 >
-                  {languageData.map(name => (
+                  {languageOptions.map(name => (
                     <MenuItem key={name} value={name}>
                       {name}
                     </MenuItem>
@@ -389,7 +385,7 @@ const AccountDetails = () => {
                 <Select
                   label='Fuso horário'
                   value={formData.timezone}
-                  onChange={e => handleFormChange('timezone', e.target.value)}
+                  onChange={e => setField('timezone', e.target.value)}
                   MenuProps={{ PaperProps: { style: { maxHeight: 250 } } }}
                 >
                   <MenuItem value='gmt-03'>(GMT-03:00) Brasília</MenuItem>
@@ -403,11 +399,7 @@ const AccountDetails = () => {
             <Grid item xs={12} sm={6}>
               <FormControl fullWidth>
                 <InputLabel>Moeda</InputLabel>
-                <Select
-                  label='Moeda'
-                  value={formData.currency}
-                  onChange={e => handleFormChange('currency', e.target.value)}
-                >
+                <Select label='Moeda' value={formData.currency} onChange={e => setField('currency', e.target.value)}>
                   <MenuItem value='brl'>BRL</MenuItem>
                   <MenuItem value='usd'>USD</MenuItem>
                   <MenuItem value='eur'>EUR</MenuItem>
@@ -416,8 +408,8 @@ const AccountDetails = () => {
             </Grid>
 
             <Grid item xs={12} className='flex gap-4 flex-wrap'>
-              <Button variant='contained' type='submit'>
-                Salvar alterações
+              <Button variant='contained' type='submit' disabled={saving}>
+                {saving ? 'Salvando…' : 'Salvar alterações'}
               </Button>
               <Button variant='outlined' type='reset' color='secondary' onClick={() => setFormData(initialData)}>
                 Resetar
@@ -426,8 +418,12 @@ const AccountDetails = () => {
           </Grid>
         </form>
       </CardContent>
+
+      <Snackbar open={snack.open} autoHideDuration={3000} onClose={() => setSnack(s => ({ ...s, open: false }))}>
+        <Alert onClose={() => setSnack(s => ({ ...s, open: false }))} severity={snack.sev} sx={{ width: '100%' }}>
+          {snack.msg}
+        </Alert>
+      </Snackbar>
     </Card>
   )
 }
-
-export default AccountDetails
