@@ -103,6 +103,13 @@ const VerticalMenu = ({ scrollMenu }) => {
             Meus Formulários
           </MenuItem>
         </MenuSection>
+
+        {/* CONVITES */}
+        <MenuSection label='Convites'>
+          <MenuItem href='/professores/convites' icon={<i className='ri-presentation-line' />}>
+            Convite de Professores
+          </MenuItem>
+        </MenuSection>
       </Menu>
     </ScrollWrapper>
   )
