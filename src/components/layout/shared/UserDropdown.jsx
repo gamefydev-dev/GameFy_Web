@@ -57,9 +57,9 @@ const UserDropdown = () => {
 
       if (!user) return
 
-      // 1) tenta buscar em public.users_app (id = auth.users.id)
+      // 1) tenta buscar em public.professors
       const { data: profile } = await supabase
-        .from('users_app')
+        .from('professors')
         .select('name, role, avatar_url')
         .eq('id', user.id)
         .maybeSingle()

@@ -36,7 +36,7 @@ export default function AccountDelete() {
 
       // Marca desativação na sua tabela de perfil da web
       const { error: updErr } = await supabase
-        .from('users_app')
+        .from('professors')
         .upsert({ id: uid, deactivated_at: new Date().toISOString() }, { onConflict: 'id' })
 
       if (updErr) throw updErr

@@ -88,7 +88,7 @@ const Award = () => {
 
         if (evaluatorIds.length) {
           const { data: users, error: errU } = await supabase
-            .from('users_app')
+            .from('professors')
             .select('id, name, role')
             .in('id', evaluatorIds)
 

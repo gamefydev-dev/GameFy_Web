@@ -91,9 +91,9 @@ const Table = () => {
       try {
         setLoading(true)
 
-        // 1) Busca ALUNOS em users_app
+        // 1) Busca ALUNOS em students
         const { data: users, error } = await supabase
-          .from('users_app')
+          .from('students')
           .select('id, email, name, role, username, avatar_url, created_at')
           .or('role.ilike.%aluno%,role.ilike.%aluna%,role.ilike.%student%')
           .order('created_at', { ascending: false })

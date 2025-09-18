@@ -88,7 +88,7 @@ export default function AccountDetails() {
   const handleChangeChips = event => setLanguage(event.target.value)
   const setField = (field, value) => setFormData(prev => ({ ...prev, [field]: value }))
 
-  // Carrega dados do usuário + users_app
+  // Carrega dados do usuário + professors
   useEffect(() => {
     ;(async () => {
       try {
@@ -100,7 +100,7 @@ export default function AccountDetails() {
         setUserId(user.id)
 
         const { data: profile } = await supabase
-          .from('users_app')
+          .from('professors')
           .select('name, role, avatar_url, contact, address, state, zip_code, country, language, timezone, currency')
           .eq('id', user.id)
           .maybeSingle()
@@ -174,8 +174,8 @@ export default function AccountDetails() {
 
     setImgSrc(url)
 
-    // Salva o caminho relativo no users_app
-    await supabase.from('users_app').upsert({ id: userId, avatar_url: path }, { onConflict: 'id' })
+    // Salva o caminho relativo no professors
+    await supabase.from('professors').upsert({ id: userId, avatar_url: path }, { onConflict: 'id' })
     setSnack({ open: true, msg: 'Foto atualizada', sev: 'success' })
   }
 
@@ -184,7 +184,7 @@ export default function AccountDetails() {
     setImgSrc(FALLBACK_AVATAR)
     if (fileRef.current) fileRef.current.value = ''
     if (!userId) return
-    await supabase.from('users_app').update({ avatar_url: null }).eq('id', userId)
+    await supabase.from('professors').update({ avatar_url: null }).eq('id', userId)
     setAvatarPath('')
   }
 
@@ -212,7 +212,7 @@ export default function AccountDetails() {
         avatar_url: avatarPath || null
       }
 
-      const { error } = await supabase.from('users_app').upsert(payload, { onConflict: 'id' })
+      const { error } = await supabase.from('professors').upsert(payload, { onConflict: 'id' })
 
       if (error) throw error
 
