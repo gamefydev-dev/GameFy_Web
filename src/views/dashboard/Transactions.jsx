@@ -54,7 +54,7 @@ const Transactions = () => {
 
         // -------- 1) Alunos (students) + presença (user_presence) --------
         const { data: alunos, error: errUsers } = await supabase
-          .from('students')
+          .from('professors')
           .select('id, role')
           .or('role.ilike.%aluno%,role.ilike.%aluna%,role.ilike.%student%')
 
