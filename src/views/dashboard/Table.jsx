@@ -1,38 +1,23 @@
 'use client'
 
-// React
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 
-// MUI
 import Typography from '@mui/material/Typography'
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Chip from '@mui/material/Chip'
 import Divider from '@mui/material/Divider'
 import LinearProgress from '@mui/material/LinearProgress'
-
-// Third-party
 import classnames from 'classnames'
 
-// Components
 import CustomAvatar from '@core/components/mui/Avatar'
-
-// Styles
 import tableStyles from '@core/styles/table.module.css'
-
-// Supabase
 import { supabase } from '@/libs/supabaseAuth'
 
-// ---------------------------------------------
-// Config
-// ---------------------------------------------
-const AVATAR_BUCKET = 'avatars_admin' // ajuste se seus avatares de aluno estiverem em outro bucket
+const AVATAR_BUCKET = 'avatars_admin'
 const FALLBACK_AVATAR = '/images/avatars/1.png'
-const ONLINE_WINDOW_SECONDS = 120 // considera online se last_seen <= 2 min
+const ONLINE_WINDOW_SECONDS = 120
 
-// ---------------------------------------------
-// Helpers
-// ---------------------------------------------
 function normalizeAvatarPath(raw) {
   if (!raw) return ''
   const val = String(raw).trim()
@@ -47,17 +32,13 @@ function normalizeAvatarPath(raw) {
 
 async function getAvatarUrl(path) {
   if (!path) return FALLBACK_AVATAR
-
-  // se for URL completa
   if (/^https?:\/\//i.test(path)) return path
-
-  // tenta URL assinada; se não der, usa pública
-  const { data: signed, error } = await supabase.storage.from(AVATAR_BUCKET).createSignedUrl(path, 60 * 60) // 1h
+  const { data: signed, error } = await supabase.storage.from(AVATAR_BUCKET).createSignedUrl(path, 60 * 60)
 
   if (!error && signed?.signedUrl) return signed.signedUrl
-  const { data: pub } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path)
+  const { data: pub } = await supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path)
 
-  return pub?.publicUrl || FALLBACK_AVATAR
+  return (pub && pub.publicUrl) || FALLBACK_AVATAR
 }
 
 function roleToIcon(role) {
@@ -66,106 +47,142 @@ function roleToIcon(role) {
   if (r.includes('admin')) return { icon: 'ri-vip-crown-line', color: 'text-primary', label: 'Admin' }
   if (r.includes('prof')) return { icon: 'ri-book-2-line', color: 'text-warning', label: 'Professor(a)' }
 
-  return { icon: 'ri-user-3-line', color: 'text-success', label: 'Aluno(a)' }
+  return { icon: 'ri-book-2-line', color: 'text-warning', label: 'Professor(a)' }
 }
 
 function statusChip(status) {
   const st = (status || '').toLowerCase()
-
-  const color =
-    st === 'online' ? 'success' : st === 'inactive' ? 'secondary' : st === 'pending' ? 'warning' : 'secondary'
+  const color = st === 'online' ? 'success' : st === 'pending' ? 'warning' : 'secondary'
 
   return <Chip className='capitalize' variant='tonal' color={color} label={st || 'offline'} size='small' />
 }
 
-// ---------------------------------------------
-// Component
-// ---------------------------------------------
+function bestTs(u) {
+  const cands = [u.created_at, u.updated_at].filter(Boolean)
+  const t = cands.length ? Date.parse(cands[0]) : NaN
+
+  return Number.isNaN(t) ? 0 : t
+}
+
 const Table = () => {
   const [loading, setLoading] = useState(true)
-  const [rows, setRows] = useState([]) // todos alunos
-  const [recent, setRecent] = useState([]) // últimos criados
+  const [rows, setRows] = useState([])
+  const [recent, setRecent] = useState([])
+  const mounted = useRef(true)
+
+  async function fetchData() {
+    try {
+      setLoading(true)
+
+      // 1) Professores
+      const { data: profs, error } = await supabase
+        .from('professors')
+        .select('id, email, name, role, username, avatar_url, created_at, updated_at')
+        .order('created_at', { ascending: false, nullsFirst: false })
+
+      if (error) throw error
+      const users = profs || []
+      const ids = users.map(u => u.id).filter(Boolean)
+
+      // 2) Fallback de avatar via profiles
+      let profiles = []
+
+      try {
+        if (ids.length) {
+          const { data: profsTbl } = await supabase.from('profiles').select('user_id, avatar_url').in('user_id', ids)
+
+          profiles = profsTbl || []
+        }
+      } catch {
+        profiles = []
+      }
+
+      const profAvatarMap = Object.fromEntries(profiles.map(p => [p.user_id, p.avatar_url || null]))
+
+      // 3) Presença (se existir) — sem a tabela, todos ficam offline
+      let presence = []
+
+      try {
+        if (ids.length) {
+          const { data: pres } = await supabase
+            .from('user_presence')
+            .select('user_id, last_seen, status')
+            .in('user_id', ids)
+
+          presence = pres || []
+        }
+      } catch {
+        presence = []
+      }
+
+      const presenceMap = Object.fromEntries(presence.map(p => [p.user_id, p]))
+      const now = Date.now()
+
+      // 4) Monta linhas
+      const mapped = await Promise.all(
+        users.map(async u => {
+          const username = u.username || '@' + (u.email?.split('@')?.[0] || 'user')
+
+          // avatar: professors.avatar_url → profiles.avatar_url → fallback
+          const avatarCandidate = normalizeAvatarPath(u.avatar_url || profAvatarMap[u.id] || '')
+          const avatarSrc = await getAvatarUrl(avatarCandidate)
+
+          const p = presenceMap[u.id]
+          let status = 'offline'
+
+          if (p) {
+            const online =
+              (p.status && String(p.status).toLowerCase() === 'online') ||
+              (p.last_seen && now - new Date(p.last_seen).getTime() <= ONLINE_WINDOW_SECONDS * 1000)
+
+            status = online ? 'online' : 'offline'
+          }
+
+          const { icon, color, label } = roleToIcon(u.role)
+
+          return {
+            id: u.id,
+            avatarSrc,
+            name: u.name || u.email || 'Professor(a)',
+            username,
+            email: u.email || '',
+            roleIcon: icon,
+            iconClass: color,
+            role: label,
+            status,
+            created_at: u.created_at,
+            _ts: bestTs(u)
+          }
+        })
+      )
+
+      if (!mounted.current) return
+      const sorted = mapped.sort((a, b) => b._ts - a._ts)
+
+      setRows(sorted)
+      setRecent(sorted.slice(0, 8))
+    } finally {
+      if (mounted.current) setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        setLoading(true)
+    mounted.current = true
+    fetchData()
 
-        // 1) Busca ALUNOS em students
-        const { data: users, error } = await supabase
-          .from('students')
-          .select('id, email, name, role, username, avatar_url, created_at')
-          .or('role.ilike.%aluno%,role.ilike.%aluna%,role.ilike.%student%')
-          .order('created_at', { ascending: false })
+    // Realtime (opcional): habilite no Supabase para 'public.professors'
+    const ch = supabase
+      .channel('professors-rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'professors' }, () => {
+        fetchData()
+      })
+      .subscribe()
 
-        if (error) throw error
-
-        const ids = (users || []).map(u => u.id).filter(Boolean)
-
-        // 2) Busca presença (opcional). Se a tabela não existir, captura erro.
-        let presence = []
-
-        try {
-          if (ids.length) {
-            const { data: pres } = await supabase
-              .from('user_presence')
-              .select('user_id, last_seen, status')
-              .in('user_id', ids)
-
-            presence = pres || []
-          }
-        } catch {
-          presence = [] // sem tabela de presença => todos offline
-        }
-
-        const presenceMap = Object.fromEntries(presence.map(p => [p.user_id, p]))
-
-        // 3) Monta linhas com avatar e status
-        const now = Date.now()
-
-        const mapped = await Promise.all(
-          (users || []).map(async u => {
-            const username = u.username || '@' + (u.email?.split('@')?.[0] || 'user')
-            const avatarPath = normalizeAvatarPath(u.avatar_url || '')
-            const avatarSrc = await getAvatarUrl(avatarPath)
-
-            const p = presenceMap[u.id]
-            let status = 'offline'
-
-            if (p) {
-              const flagOnline =
-                (p.status && String(p.status).toLowerCase() === 'online') ||
-                (p.last_seen && now - new Date(p.last_seen).getTime() <= ONLINE_WINDOW_SECONDS * 1000)
-
-              status = flagOnline ? 'online' : 'offline'
-            }
-
-            const { icon, color, label } = roleToIcon(u.role)
-
-            return {
-              id: u.id,
-              avatarSrc,
-              name: u.name || u.email || 'Usuário',
-              username,
-              email: u.email || '',
-              roleIcon: icon,
-              iconClass: color,
-              role: label,
-              status,
-              created_at: u.created_at
-            }
-          })
-        )
-
-        setRows(mapped)
-        setRecent(mapped.slice(0, 8)) // “últimos alunos criados”
-      } finally {
-        setLoading(false)
-      }
+    return () => {
+      mounted.current = false
+      supabase.removeChannel(ch)
     }
-
-    load()
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const contentTable = useMemo(() => {
     const renderRows = data => (
@@ -204,7 +221,7 @@ const Table = () => {
   return (
     <Card>
       <CardContent className='flex flex-col gap-4'>
-        <Typography variant='h6'>Últimos alunos cadastrados</Typography>
+        <Typography variant='h6'>Últimos professores cadastrados</Typography>
         {loading ? (
           <LinearProgress />
         ) : (
@@ -225,7 +242,7 @@ const Table = () => {
 
         <Divider className='my-4' />
 
-        <Typography variant='h6'>Todos os alunos</Typography>
+        <Typography variant='h6'>Todos os professores</Typography>
         {loading ? (
           <LinearProgress />
         ) : (
