@@ -11,6 +11,7 @@
     }
   ],
   "rules": {
-    "liberty/use-logical-spec": "always"
+    "liberty/use-logical-spec": "always",
+    "padding-line-between-statements": "off"
   }
 }
