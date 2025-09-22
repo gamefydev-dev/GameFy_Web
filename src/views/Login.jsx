@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -16,7 +16,6 @@ import InputAdornment from '@mui/material/InputAdornment'
 import Checkbox from '@mui/material/Checkbox'
 import Button from '@mui/material/Button'
 import FormControlLabel from '@mui/material/FormControlLabel'
-import Divider from '@mui/material/Divider'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 
@@ -38,11 +37,11 @@ const Login = ({ mode }) => {
   const searchParams = useSearchParams()
   const authBackground = useImageVariant(mode, lightImg, darkImg)
 
-  // ✅ ENVs públicas (client-side)
+  // ENVs públicas (obrigatórias no client)
   const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
   const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-  // ✅ Client do Supabase (NUNCA use SERVICE_ROLE no client)
+  // Client com integração de cookies
   const supabase = useMemo(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       console.error('Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY')
@@ -56,17 +55,85 @@ const Login = ({ mode }) => {
     })
   }, [SUPABASE_URL, SUPABASE_ANON_KEY])
 
-  const handleClickShowPassword = () => setIsPasswordShown(show => !show)
+  const handleClickShowPassword = () => setIsPasswordShown(prev => !prev)
 
-  // Destino padrão por role (quando NÃO houver ?redirect=)
   const defaultDestFor = r => (r === 'prof' ? '/' : '/alunos/dashboard')
 
-  // Persistir role em cookie (opcional)
+  // Cookies
   const setRoleCookie = r => {
     document.cookie = `app_role=${r}; Path=/; Max-Age=${60 * 60 * 24 * 30}`
   }
 
-  // Navegação segura (SPA + fallback hard)
+  const setProfileCookie = profile => {
+    const payload = {
+      id: profile?.id ?? null,
+      name: profile?.full_name ?? null,
+      role: profile?.role ?? null, // 'professor' | 'aluno'
+      category: profile?.category ?? null,
+      avatarUrl: profile?.avatar_public_url ?? null
+    }
+
+    document.cookie = `app_profile=${encodeURIComponent(JSON.stringify(payload))}; Path=/; Max-Age=${60 * 60 * 24 * 7}`
+  }
+
+  // Busca perfil em uma tabela e adiciona URL pública do avatar
+  const fetchProfileFrom = async (table, userId) => {
+    const { data: prof, error } = await supabase
+      .from(table)
+      .select('id, full_name, category, email, avatar_url, role')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (error) {
+      console.error(`Erro ao buscar perfil em ${table}:`, error)
+
+      return null
+    }
+
+    if (!prof) return null
+
+    let avatar_public_url
+
+    if (prof.avatar_url) {
+      const { data: pub } = supabase.storage.from('avatars').getPublicUrl(prof.avatar_url)
+
+      avatar_public_url = pub?.publicUrl
+    }
+
+    return { ...prof, avatar_public_url }
+  }
+
+  // Prioriza students/professors de acordo com o seletor
+  const loadProfileAndPersist = async () => {
+    if (!supabase) return null
+    const { data: userData } = await supabase.auth.getUser()
+    const userId = userData?.user?.id
+
+    if (!userId) return null
+
+    const order = role === 'aluno' ? ['students', 'professors'] : ['professors', 'students']
+
+    let profile = null
+
+    for (const table of order) {
+      profile = await fetchProfileFrom(table, userId)
+      if (profile) break
+    }
+
+    if (!profile) {
+      console.warn('Nenhum perfil encontrado em students/professors para o usuário', userId)
+
+      return null
+    }
+
+    setProfileCookie(profile)
+    const roleShort = profile.role === 'professor' ? 'prof' : profile.role === 'aluno' ? 'aluno' : role
+
+    setRoleCookie(roleShort)
+
+    return profile
+  }
+
   const navigateSafely = dest => {
     router.replace(dest)
     router.refresh()
@@ -74,19 +141,30 @@ const Login = ({ mode }) => {
       if (typeof window !== 'undefined' && window.location.pathname !== dest) {
         window.location.assign(dest)
       }
-    }, 80)
+    }, 60)
+  }
+
+  const navigateAfterLogin = async () => {
+    // garante que os cookies de sessão foram gravados
+    await supabase.auth.getSession()
+    const profile = await loadProfileAndPersist()
+
+    const roleFromProfile = profile?.role === 'professor' ? 'prof' : profile?.role === 'aluno' ? 'aluno' : role
+
+    const dest = searchParams.get('redirect') || defaultDestFor(roleFromProfile)
+
+    navigateSafely(dest)
   }
 
   const handleSubmit = async e => {
     e.preventDefault()
-    if (loading) return
-
     setErrorMsg('')
+    if (loading) return
     setLoading(true)
 
     try {
       if (!supabase) {
-        setErrorMsg('Configuração do Supabase ausente. Verifique as variáveis públicas.')
+        setErrorMsg('Configuração do Supabase ausente.')
         setLoading(false)
 
         return
@@ -103,57 +181,22 @@ const Login = ({ mode }) => {
         return
       }
 
-      // ▶ Login direto pelo Supabase
+      // 🔑 Login direto no mesmo client do auth-helper
       const { error } = await supabase.auth.signInWithPassword({ email, password })
 
       if (error) {
-        setErrorMsg(error.message)
+        setErrorMsg(error.message || 'Falha no login.')
         setLoading(false)
 
         return
       }
 
-      // Sincroniza cookies (importante p/ middleware na Vercel)
-      await supabase.auth.getSession()
-
-      setRoleCookie(role)
-
-      const dest = searchParams.get('redirect') || defaultDestFor(role)
-
-      navigateSafely(dest)
-    } catch {
+      await navigateAfterLogin()
+    } catch (err) {
+      console.error(err)
       setErrorMsg('Não foi possível entrar. Tente novamente.')
-      setLoading(false)
     } finally {
       setLoading(false)
-    }
-  }
-
-  const handleOAuth = async provider => {
-    setErrorMsg('')
-
-    try {
-      if (!supabase) {
-        setErrorMsg('Configuração do Supabase ausente. Verifique as variáveis públicas.')
-
-        return
-      }
-
-      const base = searchParams.get('redirect') || defaultDestFor(role)
-      const sep = base.includes('?') ? '&' : '?'
-      const destWithRole = `${base}${sep}role=${role}`
-
-      const origin = typeof window !== 'undefined' ? window.location.origin : ''
-      const redirectTo = `${origin}${destWithRole}`
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: { redirectTo }
-      })
-
-      if (error) setErrorMsg(error.message)
-    } catch {
-      setErrorMsg('Falha ao redirecionar para o provedor.')
     }
   }
 
@@ -179,7 +222,7 @@ const Login = ({ mode }) => {
               </Typography>
             </div>
 
-            {/* Seletor de tipo de conta */}
+            {/* Seletor de tipo de conta (Aluno / Professor) */}
             <ToggleButtonGroup
               exclusive
               value={role}
@@ -197,7 +240,7 @@ const Login = ({ mode }) => {
             </ToggleButtonGroup>
 
             {errorMsg ? (
-              <Typography role='alert' aria-live='polite' color='error'>
+              <Typography role='alert' color='error'>
                 {errorMsg}
               </Typography>
             ) : null}
@@ -234,57 +277,15 @@ const Login = ({ mode }) => {
                 </Typography>
               </div>
 
-              <Button
-                fullWidth
-                variant='contained'
-                type='submit'
-                disabled={loading || !SUPABASE_URL || !SUPABASE_ANON_KEY}
-              >
+              <Button fullWidth variant='contained' type='submit' disabled={loading}>
                 {loading ? 'Entrando…' : 'Entrar'}
               </Button>
 
               <div className='flex justify-center items-center flex-wrap gap-2'>
                 <Typography>Novo no GameFy?</Typography>
-                <Typography component={Link} href={`/register?role=${role}`} color='primary'>
+                <Typography component={Link} href='/register' color='primary'>
                   Criar conta
                 </Typography>
-              </div>
-
-              <Divider className='gap-3'>ou</Divider>
-
-              <div className='flex justify-center items-center gap-2'>
-                <IconButton
-                  size='small'
-                  className='text-github'
-                  aria-label='Entrar com GitHub'
-                  onClick={() => handleOAuth('github')}
-                >
-                  <i className='ri-github-fill' />
-                </IconButton>
-                <IconButton
-                  size='small'
-                  className='text-googlePlus'
-                  aria-label='Entrar com Google'
-                  onClick={() => handleOAuth('google')}
-                >
-                  <i className='ri-google-fill' />
-                </IconButton>
-                <IconButton
-                  size='small'
-                  className='text-facebook'
-                  aria-label='Entrar com Facebook'
-                  onClick={() => handleOAuth('facebook')}
-                >
-                  <i className='ri-facebook-fill' />
-                </IconButton>
-                <IconButton
-                  size='small'
-                  className='text-twitter'
-                  aria-label='Entrar com X/Twitter'
-                  onClick={() => handleOAuth('twitter')}
-                >
-                  <i className='ri-twitter-fill' />
-                </IconButton>
               </div>
             </form>
           </div>
