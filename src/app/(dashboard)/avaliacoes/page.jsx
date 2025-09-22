@@ -835,27 +835,19 @@ export default function PageAvaliacoes() {
                       label={`${g.members?.length || 0} integrante(s)`}
                     />
 
-                    {getGroupGithubUrl(g) ? (
-                      <Chip
-                        size='small'
-                        variant='outlined'
-                        icon={<LinkIcon fontSize='small' color='blue' />}
-                        label='Github'
-                        onClick={() => {
-                          const url = getGroupGithubUrl(g)
-
-                          if (url) window.open(url.startsWith('http') ? url : `https://${url}`, '_blank')
-                        }}
-                        onDelete={async () => {
-                          try {
-                            await navigator.clipboard.writeText(getGroupGithubUrl(g))
-                            setSnack({ open: true, msg: 'Link do GitHub copiado!', sev: 'success' })
-                          } catch {
-                            setSnack({ open: true, msg: 'Não foi possível copiar.', sev: 'warning' })
-                          }
-                        }}
-                        deleteIcon={<ContentCopyIcon />}
-                      />
+                    {g.github_url ? (
+                      <div style={{ marginTop: 8 }}>
+                        <a
+                          href={g.github_url}
+                          onClick={e => e.stopPropagation()}
+                          target='_blank'
+                          rel='noopener noreferrer'
+                        >
+                          <Button size='small' variant='outlined' startIcon={<i className='ri-github-line' />}>
+                            GitHub do grupo
+                          </Button>
+                        </a>
+                      </div>
                     ) : null}
 
                     <Box sx={{ flexGrow: 1 }} />
