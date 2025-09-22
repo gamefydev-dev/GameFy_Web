@@ -109,6 +109,27 @@ const VerticalMenu = ({ scrollMenu }) => {
           <MenuItem href='/professores/convites' icon={<i className='ri-presentation-line' />}>
             Convite de Professores
           </MenuItem>
+          <MenuItem href='/atribuir' icon={<i className='ri-graduation-cap-line' />}>
+            Atribuir Disciplinas
+          </MenuItem>
+        </MenuSection>
+
+        {/* Documentação */}
+        <MenuSection label='Documentação'>
+          <MenuItem
+            href='/professores/documentos'
+            icon={<i className='ri-file-code-line' />}
+            endContent={<Chip label='v1.0.0' size='small' />}
+          >
+            Documentação dos PIs
+          </MenuItem>
+        </MenuSection>
+
+        {/* Alunos */}
+        <MenuSection label='Alunos'>
+          <MenuItem href='/alunos/notas' icon={<i className='ri-file-list-3-line' />}>
+            Notas dos PIs
+          </MenuItem>
         </MenuSection>
       </Menu>
     </ScrollWrapper>

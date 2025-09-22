@@ -1,8 +1,12 @@
 // Utilitários compartilhados
 
 export const genCode = () => Math.random().toString(36).slice(2, 8).toUpperCase()
+
 export const norm = v => (v ?? '').toString().trim()
 
+/**
+ * Converte vários formatos para um array de membros {full_name,email,github}
+ */
 export const toMemberArray = val => {
   if (!val) return []
   if (Array.isArray(val)) return val
@@ -32,14 +36,40 @@ export const toMemberArray = val => {
   return []
 }
 
+/**
+ * Extrai um semestre inteiro (1..12) a partir de textos diversos.
+ * Aceita: "5", "5º", "Semestre 5", "S5", etc.
+ * Como fallback, tenta tokens do tipo NCC5/NADS4/MCC3.
+ */
 export const parseSemesterInt = (semText, turmaText) => {
   const s = String(semText || turmaText || '').toUpperCase()
-  const m1 = s.match(/\b([1-6])\b/)
 
-  if (m1) return Number(m1[1])
-  const m2 = s.match(/\b(?:NCC|NADS|MCC)\s*([1-6])\b/)
+  // 1) números “puros” (1..12) com ou sem símbolo º
+  const mNum = s.match(/\b(1[0-2]|[1-9])\b|(?:\b(1[0-2]|[1-9])º\b)/)
 
-  if (m2) return Number(m2[1])
+  if (mNum) {
+    const n = Number(mNum[1] || mNum[2])
+
+    if (n >= 1 && n <= 12) return n
+  }
+
+  // 2) “SEMESTRE 7”, “S7”, “PERÍODO 4”, etc.
+  const mSem = s.match(/\b(?:SEM|SEMESTRE|S|PERIODO|PERÍODO)\s*(1[0-2]|[1-9])\b/)
+
+  if (mSem) {
+    const n = Number(mSem[1])
+
+    if (n >= 1 && n <= 12) return n
+  }
+
+  // 3) tokens NCC/NADS/MCC + dígito
+  const mTok = s.match(/\b(?:NCC|NADS|MCC)\s*(1[0-2]|[1-9])\b/)
+
+  if (mTok) {
+    const n = Number(mTok[1])
+
+    if (n >= 1 && n <= 12) return n
+  }
 
   return null
 }
@@ -55,25 +85,35 @@ const courseTokenToClassName = token => {
   return null
 }
 
+/**
+ * Normaliza o NOME DA TURMA/CLASSE a partir de textos de turma/curso.
+ * Agora reconhece “CCOMP_MATUTINO” explicitamente.
+ */
 export const detectNormalizedClassName = ({ turmaText, cursoText }) => {
   const s = String(turmaText || cursoText || '')
     .toUpperCase()
     .replace(/\s+/g, '')
 
+  if (/^CCOMP_MATUTINO/.test(s)) return 'CCOMP_MATUTINO'
   if (/^CCOMP/.test(s)) return 'CCOMP'
   if (/^ADS/.test(s)) return 'ADS'
   if (/^MCC/.test(s)) return 'MCC'
-  const t = s.match(/\b(NADS[1-6]|NCC[1-6]|MCC[1-6])\b/)
+
+  const t = s.match(/\b(NADS[1-9]|NCC[1-9]|MCC[1-9]|NADS1[0-2]|NCC1[0-2]|MCC1[0-2])\b/)
 
   if (t?.[1]) return courseTokenToClassName(t[1])
 
   return null
 }
 
+/**
+ * Extrai token de curso/semestre de uma URL do GitHub (quando presente),
+ * ex.: .../NADS4/... -> {token:'NADS4', className:'ADS', semester:4}
+ */
 export const parseFromGithubUrl = url => {
   const m = String(url || '')
     .toUpperCase()
-    .match(/\b(NADS[1-6]|NCC[1-6]|MCC[1-6])\b/)
+    .match(/\b(NADS(?:1[0-2]|[1-9])|NCC(?:1[0-2]|[1-9])|MCC(?:1[0-2]|[1-9]))\b/)
 
   const token = m?.[1] || null
   const className = token ? courseTokenToClassName(token) : null
@@ -104,13 +144,18 @@ export const buildGroupsFromRows = rows => {
 
   const header = Object.keys(rows?.[0] || {})
 
-  if (!header.includes(COL_GROUP_NAME)) throw new Error('Planilha não contém a coluna "Nome do Grupo".')
+  if (!header.includes(COL_GROUP_NAME)) {
+    throw new Error('Planilha não contém a coluna "Nome do Grupo".')
+  }
 
-  const colTurma =
-    header.find(h => ['Turma', 'Nome da Turma', 'Classe', 'Class', 'Escolha um período'].includes(h)) || null
+  // ⚠️ “Escolha um período” é SEMESTRE, não turma
+  const colTurma = header.find(h => ['Turma', 'Nome da Turma', 'Classe', 'Class'].includes(h)) || null
 
   const colCurso = header.find(h => ['Curso', 'Course', 'Curso (sigla)', 'Qual o seu curso?'].includes(h)) || null
-  const colSem = header.find(h => ['Semestre', 'Semester', 'Qual o seu semestre?'].includes(h)) || null
+
+  const colSem =
+    header.find(h => ['Semestre', 'Semester', 'Qual o seu semestre?', 'Escolha um período'].includes(h)) || null
+
   const colGithub = header.find(h => ['Github', 'GitHub', 'Repositório'].includes(h)) || null
 
   const map = new Map()
@@ -122,28 +167,39 @@ export const buildGroupsFromRows = rows => {
       const turmaText = colTurma ? norm(row[colTurma]) : ''
       const cursoText = colCurso ? norm(row[colCurso]) : ''
       const semText = colSem ? norm(row[colSem]) : ''
+
       const github_url = colGithub ? norm(row[colGithub]) : ''
       const parsedUrl = parseFromGithubUrl(github_url)
 
+      // Semestre: prioridade para a coluna de semestre; fallback para turma/curso; fallback para token da URL
+      const semInt = parseSemesterInt(semText, turmaText || cursoText) ?? parsedUrl.semester ?? null
+
+      // Classe normalizada: priorize turma/curso explícito; fallback ao token da URL
+      const classGuess = detectNormalizedClassName({ turmaText, cursoText }) ?? parsedUrl.className ?? null
+
+      const code = genCode()
+
       map.set(group_name, {
         id: group_name,
-        code: genCode(),
+        code,
         group_name,
         members: [],
         members_count: 0,
-        qr_content: JSON.stringify({ group_name, code: genCode() }),
+        qr_content: JSON.stringify({ group_name, code }), // reaproveita o mesmo code
         _excel_turma: turmaText,
         _excel_curso: cursoText,
         _excel_sem: semText,
-        _excel_sem_int: parsedUrl.semester ?? null,
+        _excel_sem_int: semInt,
         github_url,
-        _url_class_guess: parsedUrl.className
+        _url_class_guess: parsedUrl.className,
+
+        // valores que o backend realmente usará
+        class_name_guess: classGuess,
+        semester: semInt
       })
     }
 
     // membros
-    const idxBase = NAME_COLS.length
-
     NAME_COLS.forEach((ncol, idx) => {
       const ecol = EMAIL_COLS[idx]
       const full_name = norm(row[ncol])
