@@ -1,12 +1,13 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+// React Imports
+import { useState } from 'react'
 
+// Next Imports
 import Link from 'next/link'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
-
+// MUI Imports
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Typography from '@mui/material/Typography'
@@ -16,198 +17,78 @@ import InputAdornment from '@mui/material/InputAdornment'
 import Checkbox from '@mui/material/Checkbox'
 import Button from '@mui/material/Button'
 import FormControlLabel from '@mui/material/FormControlLabel'
-import ToggleButton from '@mui/material/ToggleButton'
-import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
+import Divider from '@mui/material/Divider'
 
+// Component Imports
 import Logo from '@components/layout/shared/Logo'
 import Illustrations from '@components/Illustrations'
+
+// Config Imports
 import themeConfig from '@configs/themeConfig'
+
+// Hook Imports
 import { useImageVariant } from '@core/hooks/useImageVariant'
 
+// Auth Helpers (Supabase)
+import { signInWithEmail, signInWithProvider } from '@/libs/supabaseAuth'
+
 const Login = ({ mode }) => {
+  // States
   const [isPasswordShown, setIsPasswordShown] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const [loading, setLoading] = useState(false)
-  const [role, setRole] = useState('aluno') // 'aluno' | 'prof'
 
+  // Vars
   const darkImg = '/images/pages/auth-v1-mask-dark.png'
   const lightImg = '/images/pages/auth-v1-mask-light.png'
 
+  // Hooks
   const router = useRouter()
-  const searchParams = useSearchParams()
   const authBackground = useImageVariant(mode, lightImg, darkImg)
-
-  // ENVs públicas (obrigatórias no client)
-  const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-  // Client com integração de cookies
-  const supabase = useMemo(() => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-      console.error('Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY')
-
-      return null
-    }
-
-    return createClientComponentClient({
-      supabaseUrl: SUPABASE_URL,
-      supabaseKey: SUPABASE_ANON_KEY
-    })
-  }, [SUPABASE_URL, SUPABASE_ANON_KEY])
-
-  const handleClickShowPassword = () => setIsPasswordShown(prev => !prev)
-
-  const defaultDestFor = r => (r === 'prof' ? '/' : '/alunos/dashboard')
-
-  // Cookies
-  const setRoleCookie = r => {
-    document.cookie = `app_role=${r}; Path=/; Max-Age=${60 * 60 * 24 * 30}`
-  }
-
-  const setProfileCookie = profile => {
-    const payload = {
-      id: profile?.id ?? null,
-      name: profile?.full_name ?? null,
-      role: profile?.role ?? null, // 'professor' | 'aluno'
-      category: profile?.category ?? null,
-      avatarUrl: profile?.avatar_public_url ?? null
-    }
-
-    document.cookie = `app_profile=${encodeURIComponent(JSON.stringify(payload))}; Path=/; Max-Age=${60 * 60 * 24 * 7}`
-  }
-
-  // Busca perfil em uma tabela e adiciona URL pública do avatar
-  const fetchProfileFrom = async (table, userId) => {
-    const { data: prof, error } = await supabase
-      .from(table)
-      .select('id, full_name, category, email, avatar_url, role')
-      .eq('id', userId)
-      .maybeSingle()
-
-    if (error) {
-      console.error(`Erro ao buscar perfil em ${table}:`, error)
-
-      return null
-    }
-
-    if (!prof) return null
-
-    let avatar_public_url
-
-    if (prof.avatar_url) {
-      const { data: pub } = supabase.storage.from('avatars').getPublicUrl(prof.avatar_url)
-
-      avatar_public_url = pub?.publicUrl
-    }
-
-    return { ...prof, avatar_public_url }
-  }
-
-  // Prioriza students/professors de acordo com o seletor
-  const loadProfileAndPersist = async () => {
-    if (!supabase) return null
-    const { data: userData } = await supabase.auth.getUser()
-    const userId = userData?.user?.id
-
-    if (!userId) return null
-
-    const order = role === 'aluno' ? ['students', 'professors'] : ['professors', 'students']
-
-    let profile = null
-
-    for (const table of order) {
-      profile = await fetchProfileFrom(table, userId)
-      if (profile) break
-    }
-
-    if (!profile) {
-      console.warn('Nenhum perfil encontrado em students/professors para o usuário', userId)
-
-      return null
-    }
-
-    setProfileCookie(profile)
-    const roleShort = profile.role === 'professor' ? 'prof' : profile.role === 'aluno' ? 'aluno' : role
-
-    setRoleCookie(roleShort)
-
-    return profile
-  }
-
-  const navigateSafely = dest => {
-    router.replace(dest)
-    router.refresh()
-    setTimeout(() => {
-      if (typeof window !== 'undefined' && window.location.pathname !== dest) {
-        window.location.assign(dest)
-      }
-    }, 60)
-  }
-
-  const navigateAfterLogin = async () => {
-    // garante que os cookies de sessão foram gravados
-    await supabase.auth.getSession()
-    const profile = await loadProfileAndPersist()
-
-    const roleFromProfile = profile?.role === 'professor' ? 'prof' : profile?.role === 'aluno' ? 'aluno' : role
-
-    const dest = searchParams.get('redirect') || defaultDestFor(roleFromProfile)
-
-    navigateSafely(dest)
-  }
+  const handleClickShowPassword = () => setIsPasswordShown(show => !show)
 
   const handleSubmit = async e => {
     e.preventDefault()
     setErrorMsg('')
-    if (loading) return
     setLoading(true)
 
     try {
-      if (!supabase) {
-        setErrorMsg('Configuração do Supabase ausente.')
-        setLoading(false)
-
-        return
-      }
-
       const formData = new FormData(e.currentTarget)
-      const email = String(formData.get('email') || '').trim()
-      const password = String(formData.get('password') || '')
+      const email = (formData.get('email') || '').toString().trim()
+      const password = (formData.get('password') || '').toString()
 
-      if (!email || !password) {
-        setErrorMsg('Informe e-mail e senha.')
-        setLoading(false)
-
-        return
-      }
-
-      // 🔑 Login direto no mesmo client do auth-helper
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      const { error } = await signInWithEmail(email, password)
 
       if (error) {
-        setErrorMsg(error.message || 'Falha no login.')
+        setErrorMsg(error.message)
         setLoading(false)
 
         return
       }
 
-      await navigateAfterLogin()
-    } catch (err) {
-      console.error(err)
+      router.push('/') // pós-login
+    } catch {
       setErrorMsg('Não foi possível entrar. Tente novamente.')
-    } finally {
       setLoading(false)
+    }
+  }
+
+  const handleOAuth = async provider => {
+    setErrorMsg('')
+
+    try {
+      const { error } = await signInWithProvider(provider, '/')
+
+      if (error) setErrorMsg(error.message)
+
+      // redireciona via OAuth automaticamente
+    } catch {
+      setErrorMsg('Falha ao redirecionar para o provedor.')
     }
   }
 
   return (
     <div className='flex flex-col justify-center items-center min-bs-[100dvh] relative p-6'>
-      {!SUPABASE_URL || !SUPABASE_ANON_KEY ? (
-        <Typography color='error' className='mb-4'>
-          Configuração do Supabase ausente. Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.
-        </Typography>
-      ) : null}
-
       <Card className='flex flex-col sm:is-[450px]'>
         <CardContent className='p-6 sm:!p-12'>
           <Link href='/' className='flex justify-center items-center mbe-6' aria-label='Ir para a home do GameFy'>
@@ -221,23 +102,6 @@ const Login = ({ mode }) => {
                 Faça login para continuar sua jornada gamificada de aprendizado.
               </Typography>
             </div>
-
-            {/* Seletor de tipo de conta (Aluno / Professor) */}
-            <ToggleButtonGroup
-              exclusive
-              value={role}
-              onChange={(_, v) => v && setRole(v)}
-              aria-label='Tipo de conta'
-              fullWidth
-              size='small'
-            >
-              <ToggleButton value='aluno' aria-label='Aluno'>
-                Aluno
-              </ToggleButton>
-              <ToggleButton value='prof' aria-label='Professor'>
-                Professor
-              </ToggleButton>
-            </ToggleButtonGroup>
 
             {errorMsg ? (
               <Typography role='alert' color='error'>
@@ -286,6 +150,43 @@ const Login = ({ mode }) => {
                 <Typography component={Link} href='/register' color='primary'>
                   Criar conta
                 </Typography>
+              </div>
+
+              <Divider className='gap-3'>ou</Divider>
+
+              <div className='flex justify-center items-center gap-2'>
+                <IconButton
+                  size='small'
+                  className='text-github'
+                  aria-label='Entrar com GitHub'
+                  onClick={() => handleOAuth('github')}
+                >
+                  <i className='ri-github-fill' />
+                </IconButton>
+                <IconButton
+                  size='small'
+                  className='text-googlePlus'
+                  aria-label='Entrar com Google'
+                  onClick={() => handleOAuth('google')}
+                >
+                  <i className='ri-google-fill' />
+                </IconButton>
+                <IconButton
+                  size='small'
+                  className='text-facebook'
+                  aria-label='Entrar com Facebook'
+                  onClick={() => handleOAuth('facebook')}
+                >
+                  <i className='ri-facebook-fill' />
+                </IconButton>
+                <IconButton
+                  size='small'
+                  className='text-twitter'
+                  aria-label='Entrar com X/Twitter'
+                  onClick={() => handleOAuth('twitter')}
+                >
+                  <i className='ri-twitter-fill' />
+                </IconButton>
               </div>
             </form>
           </div>
