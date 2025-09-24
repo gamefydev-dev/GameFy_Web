@@ -23,15 +23,19 @@ import {
   TableRow,
   TableCell,
   TableBody,
-  LinearProgress
+  LinearProgress,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material'
 import SearchIcon from '@mui/icons-material/Search'
 import GroupIcon from '@mui/icons-material/Groups2'
-import OpenInNewIcon from '@mui/icons-material/OpenInNew'
-import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import InfoIcon from '@mui/icons-material/InfoOutlined'
 import PersonIcon from '@mui/icons-material/Person'
 import GroupsIcon from '@mui/icons-material/Groups'
+import RateReviewIcon from '@mui/icons-material/RateReview'
 
 import { supabase } from '@/libs/supabaseAuth'
 
@@ -48,10 +52,11 @@ const W_E2 = 0.08
 
 const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${subjectId}`
 
-// <<< IMPORTANTE: a leitura do individual usa a MESMA chave das entregas de grupo
-const roleKeyDeliveryStudent = (deliveryNo, subjectId, _studentId) => `delivery_${deliveryNo}:subject_${subjectId}`
+const roleKeyDeliveryStudent = (deliveryNo, subjectId, studentId) =>
+  `delivery_${deliveryNo}:subject_${subjectId}:student_${studentId}`
 
 const roleKeyPresentationCriterion = crit => `presentation:${crit}`
+
 const roleKeyPresentationFinalStudent = studentId => `presentation:final:student_${studentId}`
 
 const PRESENT_CRITERIA = [
@@ -70,14 +75,16 @@ const normalizeCourseForSubjects = categoryFromView => {
   return c || null
 }
 
-const getGroupGithubUrl = group => {
-  const n = v => (v || '').trim()
-  const fromGroup = n(group?.github_url)
+// extrai subjectId e qual entrega de uma role_key (delivery_1/2:subject_X...)
+const parseDeliveryKey = rk => {
+  if (!rk) return null
 
-  if (fromGroup) return fromGroup
-  const firstMember = (group?.members || []).find(m => n(m.github))
+  // aceita numbers, UUIDs etc. e para no próximo :" (ex.: :student_...)
+  const m = rk.match(/^delivery_(\d):subject_([^:])/)
 
-  return n(firstMember?.github)
+  if (!m) return null
+
+  return { deliveryNo: Number(m[1]), subjectId: String(m[2]) }
 }
 
 // ===================== Página =====================
@@ -95,7 +102,21 @@ export default function PageAlunoNotas() {
   const [resolveError, setResolveError] = useState(null)
 
   const [groupAvgByRole, setGroupAvgByRole] = useState(new Map())
+  const [groupCommentsByRole, setGroupCommentsByRole] = useState(new Map())
   const [myByRole, setMyByRole] = useState(new Map())
+  const [myCommentsByRole, setMyCommentsByRole] = useState(new Map())
+
+  // 🆕 feedbacks detalhados por disciplina (com professor)
+  // Map<number subjectId> => { e1: Array<FeedbackItem>, e2: Array<FeedbackItem> }
+  // FeedbackItem = { scope: 'Grupo'|'Individual', evaluatorId?: string|number|null, evaluatorName: string, comment: string }
+  const [feedbackBySubject, setFeedbackBySubject] = useState(new Map())
+
+  // nomes de professores por id
+  const [teachersById, setTeachersById] = useState(new Map())
+
+  // diálogo de feedbacks
+  const [fbOpen, setFbOpen] = useState(false)
+  const [fbSubject, setFbSubject] = useState({ id: null, name: '' })
 
   useEffect(() => {
     ;(async () => {
@@ -187,7 +208,7 @@ export default function PageAlunoNotas() {
 
       setStudentName(me?.full_name || sName || authUser?.email || 'Aluno')
 
-      // Curso/Semestre pela VIEW v_precadastro_normalizado
+      // Curso/Semestre
       let vrow = null
 
       try {
@@ -240,7 +261,7 @@ export default function PageAlunoNotas() {
 
       setSubjects(subj)
 
-      // ---- notas do GRUPO (média) ----
+      // --------- GRUPO: média + comments + evaluator_id ---------
       const roleKeys = []
 
       subj.forEach(s => {
@@ -251,18 +272,47 @@ export default function PageAlunoNotas() {
 
       const { data: evs } = await supabase
         .from('evaluations')
-        .select('group_id, evaluator_role, score')
+        .select('group_id, evaluator_role, evaluator_id, score, comment')
         .eq('group_id', gid)
         .in('evaluator_role', roleKeys)
 
       const gmap = new Map()
+      const gComments = new Map()
+
+      // 🆕 agregador detalhado
+      const fbAggreg = new Map() // subjectId -> { e1:[], e2:[] }
 
       ;(evs || []).forEach(r => {
+        // média por role_key
         const list = gmap.get(r.evaluator_role) || []
 
         list.push(Number(r.score || 0))
         gmap.set(r.evaluator_role, list)
+
+        if (r?.comment != null && !gComments.has(r.evaluator_role)) {
+          gComments.set(r.evaluator_role, String(r.comment))
+        }
+
+        // feedback detalhado por disciplina (somente delivery_1/2)
+        const meta = parseDeliveryKey(r.evaluator_role)
+
+        if (meta && r?.comment) {
+          const subjKey = String(meta.subjectId)
+          const bucket = fbAggreg.get(subjKey) || { e1: [], e2: [] }
+
+          const it = {
+            scope: 'Grupo',
+            evaluatorId: r.evaluator_id ?? null,
+            evaluatorName: '', // resolvemos depois
+            comment: String(r.comment)
+          }
+
+          if (meta.deliveryNo === 1) bucket.e1.push(it)
+          if (meta.deliveryNo === 2) bucket.e2.push(it)
+          fbAggreg.set(subjKey, bucket)
+        }
       })
+
       const gByRole = new Map()
 
       gmap.forEach((arr, k) => {
@@ -272,65 +322,185 @@ export default function PageAlunoNotas() {
         gByRole.set(k, round2(avg))
       })
       setGroupAvgByRole(gByRole)
+      setGroupCommentsByRole(gComments)
 
-      // ---- notas INDIVIDUAIS ----
-      // (entregas) MESMA chave das entregas de grupo
+      // --------- INDIVIDUAL: notas + comments + evaluator_id ---------
       const keysIndiv = []
 
       subj.forEach(s => {
         keysIndiv.push(roleKeyDeliveryStudent(1, s.id, sId))
         keysIndiv.push(roleKeyDeliveryStudent(2, s.id, sId))
       })
-
-      // (apresentação final individual)
-      keysIndiv.push(roleKeyPresentationFinalStudent(sId))
+      keysIndiv.push(roleKeyPresentationFinalStudent(sId)) // ignorado no feedback por disciplina
 
       const indiv = new Map()
+      const indivComments = new Map()
 
+      // origem principal
       const { data: se1 } = await supabase
         .from('students_evaluation')
-        .select('role_key, score')
+
+        // se sua tabela NÃO tiver evaluator_id, remova-o do select abaixo
+        .select('role_key, score, comment, evaluator_id')
         .eq('group_id', gid)
         .eq('student_id', sId)
         .in('role_key', keysIndiv)
 
-      ;(se1 || []).forEach(r => indiv.set(r.role_key, Number(r.score || 0)))
+      ;(se1 || []).forEach(r => {
+        indiv.set(r.role_key, Number(r.score || 0))
 
-      // (fallback: se algum dia tiverem salvo em evaluations com a mesma chave)
+        if (r?.comment != null && !indivComments.has(r.role_key)) {
+          indivComments.set(r.role_key, String(r.comment))
+        }
+
+        // feedback detalhado individual
+        const meta = parseDeliveryKey(r.role_key)
+
+        if (meta && r?.comment) {
+          const subjId = meta.subjectId
+          const bucket = fbAggreg.get(subjId) || { e1: [], e2: [] }
+
+          const it = {
+            scope: 'Individual',
+            evaluatorId: r.evaluator_id ?? null,
+            evaluatorName: '',
+            comment: String(r.comment)
+          }
+
+          if (meta.deliveryNo === 1) bucket.e1.push(it)
+          if (meta.deliveryNo === 2) bucket.e2.push(it)
+          fbAggreg.set(subjId, bucket)
+        }
+      })
+
+      // fallback: se por acaso salvaram individual em evaluations (com a mesma role_key)
       const { data: se2 } = await supabase
         .from('evaluations')
-        .select('evaluator_role, score')
+        .select('evaluator_role, score, comment, evaluator_id')
         .eq('group_id', gid)
         .in('evaluator_role', keysIndiv)
 
-      ;(se2 || []).forEach(r => indiv.set(r.evaluator_role, Number(r.score || 0)))
+      ;(se2 || []).forEach(r => {
+        if (!indiv.has(r.evaluator_role)) indiv.set(r.evaluator_role, Number(r.score || 0))
+
+        if (r?.comment != null && !indivComments.has(r.evaluator_role)) {
+          indivComments.set(r.evaluator_role, String(r.comment))
+        }
+
+        const meta = parseDeliveryKey(r.evaluator_role)
+
+        if (meta && r?.comment) {
+          const subjId = meta.subjectId
+          const bucket = fbAggreg.get(subjId) || { e1: [], e2: [] }
+
+          const it = {
+            scope: 'Individual',
+            evaluatorId: r.evaluator_id ?? null,
+            evaluatorName: '',
+            comment: String(r.comment)
+          }
+
+          if (meta.deliveryNo === 1) bucket.e1.push(it)
+          if (meta.deliveryNo === 2) bucket.e2.push(it)
+          fbAggreg.set(subjId, bucket)
+        }
+      })
 
       setMyByRole(indiv)
+      setMyCommentsByRole(indivComments)
+
+      // 🆕 resolver nomes dos professores (1 única query)
+      const allIds = new Set()
+
+      fbAggreg.forEach(({ e1, e2 }) => {
+        e1.forEach(f => f.evaluatorId && allIds.add(f.evaluatorId))
+        e2.forEach(f => f.evaluatorId && allIds.add(f.evaluatorId))
+      })
+
+      let namesMap = new Map()
+
+      if (allIds.size) {
+        try {
+          const { data: profs } = await supabase
+            .from('professors')
+            .select('id, full_name, email')
+            .in('id', Array.from(allIds))
+
+          ;(profs || []).forEach(p => {
+            const nm = p.full_name || p.email || `Professor ${p.id}`
+
+            namesMap.set(p.id, nm)
+          })
+        } catch {}
+      }
+
+      // aplicar nomes
+      const fbFinal = new Map()
+
+      fbAggreg.forEach((obj, subjId) => {
+        const fix = arr =>
+          arr.map(f => ({
+            ...f,
+            evaluatorName:
+              f.evaluatorName ||
+              (f.evaluatorId ? namesMap.get(f.evaluatorId) || `Professor ${f.evaluatorId}` : 'Professor (desconhecido)')
+          }))
+
+        fbFinal.set(subjId, { e1: fix(obj.e1), e2: fix(obj.e2) })
+      })
+
+      setTeachersById(namesMap)
+      setFeedbackBySubject(fbFinal)
+
       setLoading(false)
     })()
   }, [])
 
-  // Helpers
+  // Helpers para notas/comentários agregados
   const groupScore = (roleKey, fb = null) => (groupAvgByRole.has(roleKey) ? groupAvgByRole.get(roleKey) : fb)
   const myScore = (roleKey, fb = null) => (myByRole.has(roleKey) ? myByRole.get(roleKey) : fb)
+  const groupComment = roleKey => groupCommentsByRole.get(roleKey) ?? null
+  const myComment = roleKey => myCommentsByRole.get(roleKey) ?? null
 
-  const rows = useMemo(() => {
+  const rowsRaw = useMemo(() => {
     if (!group || !subjects.length) return []
     const data = []
 
     subjects.forEach(s => {
-      const e1G = groupScore(roleKeyDelivery(1, s.id), null)
-      const e2G = groupScore(roleKeyDelivery(2, s.id), null)
-      const e1I = myScore(roleKeyDeliveryStudent(1, s.id, studentId), null)
-      const e2I = myScore(roleKeyDeliveryStudent(2, s.id, studentId), null)
+      const e1KeyG = roleKeyDelivery(1, s.id)
+      const e2KeyG = roleKeyDelivery(2, s.id)
+      const e1KeyI = roleKeyDeliveryStudent(1, s.id, studentId)
+      const e2KeyI = roleKeyDeliveryStudent(2, s.id, studentId)
+
+      const e1G = groupScore(e1KeyG, null)
+      const e2G = groupScore(e2KeyG, null)
+      const e1I = myScore(e1KeyI, null)
+      const e2I = myScore(e2KeyI, null)
+
       const e1Val = e1I != null ? e1I : e1G
       const e2Val = e2I != null ? e2I : e2G
+
+      const e1Comment = myComment(e1KeyI) ?? groupComment(e1KeyG) ?? null
+      const e2Comment = myComment(e2KeyI) ?? groupComment(e2KeyG) ?? null
+
       const weighted = round2(Number(e1Val || 0) * W_E1 + Number(e2Val || 0) * W_E2)
 
-      data.push({ subject: s.name, e1G, e1I, e1Val, e2G, e2I, e2Val, weighted })
+      data.push({
+        subjectId: String(s.id),
+        subject: s.name,
+        e1G,
+        e1I,
+        e1Val,
+        e1Comment,
+        e2G,
+        e2I,
+        e2Val,
+        e2Comment,
+        weighted
+      })
     })
 
-    // apresentação
+    // apresentação (mantido)
     const crit = PRESENT_CRITERIA.map(c => ({ key: c.key, label: c.label }))
     const critGroup = crit.map(c => ({ ...c, value: groupScore(roleKeyPresentationCriterion(c.key), null) }))
 
@@ -344,7 +514,15 @@ export default function PageAlunoNotas() {
     data.push({ subject: 'Apresentação', presentation: { critGroup, presentGroupAvg, presentIndiv, presentVal } })
 
     return data
-  }, [group, subjects, groupAvgByRole, myByRole, studentId])
+  }, [group, subjects, groupAvgByRole, myByRole, studentId, groupCommentsByRole, myCommentsByRole])
+
+  const rows = useMemo(() => {
+    const term = (search || '').trim().toLowerCase()
+
+    if (!term) return rowsRaw
+
+    return rowsRaw.filter(r => r.subject === 'Apresentação' || r.subject.toLowerCase().includes(term))
+  }, [rowsRaw, search])
 
   const deliveriesSum = useMemo(() => {
     const onlySubjects = rows.filter(r => r.subject !== 'Apresentação')
@@ -381,15 +559,76 @@ export default function PageAlunoNotas() {
           <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
             <InfoIcon fontSize='small' />
             <Typography variant='body2'>
-              Disciplinas filtradas pela <strong>categoria/curso</strong> da view <code>v_precadastro_normalizado</code>{' '}
-              (<strong>{courseFromView || '—'}</strong>) e pelo <strong>semestre</strong> ({semesterFromView ?? '—'}).
               Quando existir nota <strong>individual</strong>, ela prevalece sobre a nota do <strong>grupo</strong>.
+              Agora você pode ver <strong>todos os feedbacks por professor</strong> em cada disciplina.
             </Typography>
           </Stack>
         }
       />
     </Card>
   )
+
+  const FeedbackButton = ({ subjectId, subjectName }) => {
+    const bucket = feedbackBySubject.get(String(subjectId))
+    const count = (bucket?.e1?.length || 0) + (bucket?.e2?.length || 0)
+
+    return (
+      <Button
+        size='small'
+        variant='outlined'
+        startIcon={<RateReviewIcon />}
+        onClick={() => {
+          setFbSubject({ id: subjectId, name: subjectName })
+          setFbOpen(true)
+        }}
+      >
+        Ver feedbacks {count ? `(${count})` : ''}
+      </Button>
+    )
+  }
+
+  const FeedbackDialog = () => {
+    const subjId = fbSubject.id
+    const subjName = fbSubject.name
+    const bucket = feedbackBySubject.get(subjId) || { e1: [], e2: [] }
+
+    const rows = [...bucket.e1.map(f => ({ entrega: 'E1', ...f })), ...bucket.e2.map(f => ({ entrega: 'E2', ...f }))]
+
+    return (
+      <Dialog open={fbOpen} onClose={() => setFbOpen(false)} maxWidth='md' fullWidth>
+        <DialogTitle>Feedbacks — {subjName}</DialogTitle>
+        <DialogContent dividers>
+          {rows.length === 0 ? (
+            <Alert severity='info'>Nenhum feedback registrado para esta disciplina.</Alert>
+          ) : (
+            <Table size='small'>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Entrega</TableCell>
+                  <TableCell>Escopo</TableCell>
+                  <TableCell>Professor</TableCell>
+                  <TableCell>Comentário</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {rows.map((r, i) => (
+                  <TableRow key={i}>
+                    <TableCell>{r.entrega}</TableCell>
+                    <TableCell>{r.scope}</TableCell>
+                    <TableCell>{r.evaluatorName}</TableCell>
+                    <TableCell style={{ whiteSpace: 'pre-wrap' }}>{r.comment}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFbOpen(false)}>Fechar</Button>
+        </DialogActions>
+      </Dialog>
+    )
+  }
 
   const body = loading ? (
     <Box>
@@ -409,9 +648,12 @@ export default function PageAlunoNotas() {
           <Card variant='outlined'>
             <CardHeader
               title={
-                <Typography variant='subtitle1' fontWeight={800}>
-                  {r.subject}
-                </Typography>
+                <Stack direction='row' alignItems='center' spacing={1}>
+                  <Typography variant='subtitle1' fontWeight={800}>
+                    {r.subject}
+                  </Typography>
+                  {r.subject !== 'Apresentação' && <FeedbackButton subjectId={r.subjectId} subjectName={r.subject} />}
+                </Stack>
               }
             />
             <CardContent>
@@ -451,6 +693,7 @@ export default function PageAlunoNotas() {
                 <Grid container spacing={1.5}>
                   <Grid item xs={12}>
                     <Stack spacing={1}>
+                      {/* E1 */}
                       <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
                         <Typography variant='body2'>1ª Entrega (peso {formatBR(W_E1)}):</Typography>
                         <Chip size='small' color='primary' label={formatBR(r.e1Val)} />
@@ -469,6 +712,13 @@ export default function PageAlunoNotas() {
                           />
                         )}
                       </Stack>
+                      {r.e1Comment && (
+                        <Typography variant='caption' sx={{ ml: 0.5 }}>
+                          <strong>Feedback E1 (resumo):</strong> {r.e1Comment}
+                        </Typography>
+                      )}
+
+                      {/* E2 */}
                       <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
                         <Typography variant='body2'>2ª Entrega (peso {formatBR(W_E2)}):</Typography>
                         <Chip size='small' color='primary' label={formatBR(r.e2Val)} />
@@ -487,11 +737,18 @@ export default function PageAlunoNotas() {
                           />
                         )}
                       </Stack>
+                      {r.e2Comment && (
+                        <Typography variant='caption' sx={{ ml: 0.5 }}>
+                          <strong>Feedback E2 (resumo):</strong> {r.e2Comment}
+                        </Typography>
+                      )}
                     </Stack>
                   </Grid>
+
                   <Grid item xs={12}>
                     <Divider />
                   </Grid>
+
                   <Grid item xs={12}>
                     <Stack direction='row' spacing={1} alignItems='center'>
                       <Typography variant='caption'>
@@ -529,9 +786,11 @@ export default function PageAlunoNotas() {
                   <TableCell align='right'>E1 (grupo)</TableCell>
                   <TableCell align='right'>E1 (individual)</TableCell>
                   <TableCell align='right'>E1 que vale</TableCell>
+                  <TableCell align='right'>Feedback E1 (resumo)</TableCell>
                   <TableCell align='right'>E2 (grupo)</TableCell>
                   <TableCell align='right'>E2 (individual)</TableCell>
                   <TableCell align='right'>E2 que vale</TableCell>
+                  <TableCell align='right'>Feedback E2 (resumo)</TableCell>
                   <TableCell align='right'>Soma ponderada</TableCell>
                 </TableRow>
               </TableHead>
@@ -540,16 +799,33 @@ export default function PageAlunoNotas() {
                   .filter(r => r.subject !== 'Apresentação')
                   .map((r, i) => (
                     <TableRow key={i}>
-                      <TableCell>{r.subject}</TableCell>
+                      <TableCell>
+                        <Stack direction='row' spacing={1} alignItems='center'>
+                          <span>{r.subject}</span>
+                          <FeedbackButton subjectId={r.subjectId} subjectName={r.subject} />
+                        </Stack>
+                      </TableCell>
                       <TableCell align='right'>{formatBR(r.e1G)}</TableCell>
                       <TableCell align='right'>{formatBR(r.e1I)}</TableCell>
                       <TableCell align='right'>
                         <strong>{formatBR(r.e1Val)}</strong>
                       </TableCell>
+                      <TableCell
+                        align='right'
+                        style={{ maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      >
+                        {r.e1Comment || ''}
+                      </TableCell>
                       <TableCell align='right'>{formatBR(r.e2G)}</TableCell>
                       <TableCell align='right'>{formatBR(r.e2I)}</TableCell>
                       <TableCell align='right'>
                         <strong>{formatBR(r.e2Val)}</strong>
+                      </TableCell>
+                      <TableCell
+                        align='right'
+                        style={{ maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      >
+                        {r.e2Comment || ''}
                       </TableCell>
                       <TableCell align='right'>
                         <Chip size='small' color='primary' label={formatBR(r.weighted)} />
@@ -557,7 +833,7 @@ export default function PageAlunoNotas() {
                     </TableRow>
                   ))}
                 <TableRow>
-                  <TableCell colSpan={7}>
+                  <TableCell colSpan={9}>
                     <strong>Total entregas</strong>
                   </TableCell>
                   <TableCell align='right'>
@@ -568,7 +844,7 @@ export default function PageAlunoNotas() {
                   <TableCell>
                     <strong>Apresentação</strong>
                   </TableCell>
-                  <TableCell colSpan={6}></TableCell>
+                  <TableCell colSpan={8}></TableCell>
                   <TableCell align='right'>
                     <strong>
                       {formatBR(rows.find(r => r.subject === 'Apresentação')?.presentation?.presentVal ?? 0)}
@@ -580,6 +856,8 @@ export default function PageAlunoNotas() {
           </CardContent>
         </Card>
       </Grid>
+
+      <FeedbackDialog />
     </Grid>
   )
 

@@ -53,6 +53,7 @@ import { supabase } from '@/libs/supabaseAuth'
 const clamp10 = n => Math.min(10, Math.max(0, Number.isFinite(n) ? n : 0))
 const round2 = n => Number((Math.round(n * 100) / 100).toFixed(2))
 const norm = v => (v ?? '').toString().trim()
+const asKey = v => String(v) // 👈 garante string para UUID/number
 
 const formatBR = n => {
   if (n == null || Number.isNaN(n)) return ''
@@ -93,13 +94,13 @@ const SUBJECTS_TO_SKIP = ({ course, semester, name }) => {
   return false
 }
 
-const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${subjectId}`
+const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${asKey(subjectId)}`
 
-const roleKeyDeliveryStudent = (deliveryNo, subjectId, studentKey) =>
-  `delivery_${deliveryNo}:subject_${subjectId}:student_${studentKey}`
+const roleKeyDeliveryStudent = (deliveryNo, subjectId, studentId) =>
+  `delivery_${deliveryNo}:subject_${asKey(subjectId)}:student_${asKey(studentId)}`
 
 const roleKeyPresentationCriterion = crit => `presentation:${crit}`
-const roleKeyPresentationFinalStudent = studentKey => `presentation:final:student_${studentKey}`
+const roleKeyPresentationFinalStudent = studentKey => `presentation:final:student_${asKey(studentKey)}`
 
 // -------------------------------------------------------------
 // Componente
@@ -235,6 +236,7 @@ export default function PageAvaliacoes() {
               const id = c.id || row.class_id
 
               if (!id) return
+
               const prev = map.get(id)
 
               const semester_int_fallback = Math.min(
@@ -360,7 +362,7 @@ export default function PageAvaliacoes() {
 
       setMySubjects(mySet)
 
-      // notas já lançadas por mim
+      // notas já lançadas por mim (grupo)
       const { data: evs } = await supabase
         .from('evaluations')
         .select('id, group_id, evaluator_id, evaluator_role, score, comment')
@@ -373,6 +375,7 @@ export default function PageAvaliacoes() {
         map.set(`${r.group_id}:${r.evaluator_role}`, { id: r.id, score: r.score, comment: r.comment })
       })
       setMyScores(map)
+
       setLoading(false)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -437,7 +440,8 @@ export default function PageAvaliacoes() {
     return round2(list.reduce((a, b) => a + b, 0))
   }
 
-  // ---------------------------------- Save (upsert) ----------------------------------
+  // ---------------------------------- UPSERTS ----------------------------------
+  // Grupo → evaluations (nota + comentário)
   const upsertEvaluation = async ({ groupId, roleKey, value, text }) => {
     const k = `${groupId}:${roleKey}`
     const existing = myObj(groupId, roleKey)
@@ -466,15 +470,53 @@ export default function PageAvaliacoes() {
     }
   }
 
-  // ---------------------------------- Resolver CHAVE do aluno (padrão tela do aluno) ----------------------------------
-  // Prioriza students.user_id; se não houver, usa students.id; resolve por e-mail quando necessário.
+  // Individual → students_evaluation (nota + comentário)
+  const upsertStudentEvaluation = async ({ groupId, studentId, roleKey, value, text }) => {
+    const payload = {
+      group_id: groupId, // geralmente number
+      student_id: String(studentId), // 👈 coerção para string (UUID/text)
+      role_key: String(roleKey), // 👈 sempre string para bater com o leitor
+      score: round2(clamp10(value)),
+      comment: norm(text || ''),
+      evaluator_id: user.id // caso sua tabela não tenha essa coluna, remova
+    }
+
+    try {
+      // caminho seguro para quem não tem constraint unique
+      const { data: existing, error: selErr } = await supabase
+        .from('students_evaluation')
+        .select('id')
+        .eq('group_id', groupId)
+        .eq('student_id', String(studentId))
+        .eq('role_key', String(roleKey))
+        .maybeSingle()
+
+      if (selErr) throw selErr
+
+      if (existing?.id) {
+        const { error } = await supabase.from('students_evaluation').update(payload).eq('id', existing.id)
+
+        if (error) throw error
+      } else {
+        const { error } = await supabase.from('students_evaluation').insert(payload)
+
+        if (error) throw error
+      }
+    } catch {
+      // se houver unique (group_id,student_id,role_key) isso funciona
+      const { error } = await supabase.from('students_evaluation').upsert(payload)
+
+      if (error) throw error
+    }
+  }
+
+  // ---------------------------------- Resolver CHAVE do aluno (igual tela do aluno) ----------------------------------
   const resolveStudentKey = async member => {
     if (member?.student_user_id) return member.student_user_id
     if (member?.student_id) return member.student_id
     const email = (member?.email || '').toLowerCase().trim()
 
     if (!email) return null
-
     const { data } = await supabase.from('students').select('id, user_id, email').ilike('email', email).maybeSingle()
 
     return data?.user_id || data?.id || null
@@ -660,23 +702,24 @@ export default function PageAvaliacoes() {
           return
         }
 
-        // 1) Grupo
+        // 1) Grupo → evaluations (nota + feedback)
         await upsertEvaluation({
           groupId: group.id,
-          roleKey: roleKeyDelivery(deliveryNo, subject.id),
+          roleKey: roleKeyDelivery(deliveryNo, String(subject.id)),
           value: score,
           text: comment
         })
 
-        // 2) Individuais
+        // 2) Individuais → students_evaluation (nota + feedback)
         const toSave = []
 
-        if (copyToAll) {
+        // se o prof não preencheu individuais e não marcou copiar, gravamos a do grupo p/ todos (opcional)
+        if (copyToAll || (indiv && indiv.every(x => x.value === '' || x.changed === false))) {
           for (const it of indiv) {
             const sid = it.student?.student_key
 
             if (!sid) continue
-            toSave.push({ sid, val: score })
+            toSave.push({ sid: String(sid), val: score })
           }
         } else {
           for (const it of indiv) {
@@ -685,15 +728,16 @@ export default function PageAvaliacoes() {
             if (!sid) continue
 
             if (it.changed && it.value !== '' && Number.isFinite(Number(it.value))) {
-              toSave.push({ sid, val: Number(it.value) })
+              toSave.push({ sid: String(sid), val: Number(it.value) })
             }
           }
         }
 
         for (const item of toSave) {
-          await upsertEvaluation({
+          await upsertStudentEvaluation({
             groupId: group.id,
-            roleKey: roleKeyDeliveryStudent(deliveryNo, subject.id, item.sid),
+            studentId: String(item.sid),
+            roleKey: roleKeyDeliveryStudent(deliveryNo, String(subject.id), String(item.sid)),
             value: item.val,
             text: `(individual) ${comment}`
           })
@@ -703,7 +747,7 @@ export default function PageAvaliacoes() {
       } else {
         const { group } = target
 
-        // Grupo - critérios apresentação
+        // Grupo - critérios apresentação (nota + feedback)
         for (const c of PRESENT_CRITERIA) {
           const key = roleKeyPresentationCriterion(c.key)
           const val = Number(presentValues[c.key] ?? 0)
@@ -711,15 +755,15 @@ export default function PageAvaliacoes() {
           await upsertEvaluation({ groupId: group.id, roleKey: key, value: val, text: comment })
         }
 
-        // Individuais (apresentação)
+        // Individuais (apresentação final) → students_evaluation (nota + feedback)
         const toSave = []
 
-        if (copyToAll) {
+        if (copyToAll || (indiv && indiv.every(x => x.value === '' || x.changed === false))) {
           for (const it of indiv) {
             const sid = it.student?.student_key
 
             if (!sid) continue
-            toSave.push({ sid, val: Number(score || 0) })
+            toSave.push({ sid: String(sid), val: Number(score || 0) })
           }
         } else {
           for (const it of indiv) {
@@ -728,15 +772,16 @@ export default function PageAvaliacoes() {
             if (!sid) continue
 
             if (it.changed && it.value !== '' && Number.isFinite(Number(it.value))) {
-              toSave.push({ sid, val: Number(it.value) })
+              toSave.push({ sid: String(sid), val: Number(it.value) })
             }
           }
         }
 
         for (const item of toSave) {
-          await upsertEvaluation({
+          await upsertStudentEvaluation({
             groupId: group.id,
-            roleKey: roleKeyPresentationFinalStudent(item.sid),
+            studentId: String(item.sid),
+            roleKey: roleKeyPresentationFinalStudent(String(item.sid)),
             value: item.val,
             text: `(individual apresentação) ${comment}`
           })
@@ -748,7 +793,11 @@ export default function PageAvaliacoes() {
       setDlgOpen(false)
     } catch (e) {
       console.error(e)
-      setSnack({ open: true, msg: 'Erro ao salvar.', sev: 'error' })
+      setSnack({
+        open: true,
+        msg: `Erro ao salvar: ${e?.message || e || 'desconhecido'}`,
+        sev: 'error'
+      })
     }
   }
 
