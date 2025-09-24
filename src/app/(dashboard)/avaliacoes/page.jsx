@@ -904,7 +904,7 @@ export default function PageAvaliacoes() {
               <Divider />
 
               <Stack direction='row' alignItems='center' spacing={1}>
-                <Checkbox checked={copyToAll} onChange={(_, v => setCopyToAll(v))} />
+                <Checkbox checked={copyToAll} onChange={(_, v) => setCopyToAll(v)} />
                 <Typography variant='body2'>
                   Copiar a nota do <b>grupo</b> para todos (grava como <i>individual</i>).
                 </Typography>
