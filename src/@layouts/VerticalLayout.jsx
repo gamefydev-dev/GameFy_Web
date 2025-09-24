@@ -20,7 +20,7 @@ const VerticalLayout = props => {
       <div className={verticalLayoutClasses.navContainer}>
         {navigation || null}
         {/* Link fixo para notas dos alunos */}
-        <Link href='/alunos/notas'>Minhas Notas</Link>
+        <Link href='/alunos/notas'></Link>
       </div>
       <div className={classnames(verticalLayoutClasses.contentWrapper, 'flex flex-col min-is-0 is-full')}>
         {navbar || null}
