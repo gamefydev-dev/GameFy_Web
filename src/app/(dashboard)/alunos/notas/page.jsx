@@ -37,6 +37,7 @@ import RateReviewIcon from '@mui/icons-material/RateReview'
 
 import { supabase } from '@/libs/supabaseAuth'
 
+// ===================== Utils ======================
 const round2 = n => Number((Math.round(Number(n || 0) * 100) / 100).toFixed(2))
 
 const formatBR = n =>
@@ -46,7 +47,7 @@ const formatBR = n =>
 
 const W_E1 = 0.06
 const W_E2 = 0.08
-const asKey = v => String(v)
+const asKey = v => String(v ?? '')
 
 const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${asKey(subjectId)}`
 
@@ -72,15 +73,17 @@ const normalizeCourseForSubjects = categoryFromView => {
   return c || null
 }
 
+// aceita subject numérico ou uuid
 const parseDeliveryKey = rk => {
   if (!rk) return null
-  const m = rk.match(/delivery_(\d):subject_(\w+)/) // aceita número/uuid
+  const m = rk.match(/delivery_(\d):subject_([^:]+)/)
 
   if (!m) return null
 
-  return { deliveryNo: Number(m[1]), subjectId: m[2] }
+  return { deliveryNo: Number(m[1]), subjectId: String(m[2]) }
 }
 
+// ===================== Página =====================
 export default function PageAlunoNotas() {
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState(null)
@@ -109,6 +112,7 @@ export default function PageAlunoNotas() {
       setLoading(true)
       setResolveError(null)
 
+      // auth
       const { data: u } = await supabase.auth.getUser()
       const authUser = u?.user || null
 
@@ -126,14 +130,15 @@ export default function PageAlunoNotas() {
           .maybeSingle()
 
         if (srow) {
-          sId = srow.user_id || srow.id || sId
+          sId = srow.user_id || sId || srow.id
           sName = srow.full_name || sName
         }
       } catch {}
 
-      setStudentId(String(sId))
+      sId = asKey(sId)
+      setStudentId(sId)
 
-      // grupo do aluno
+      // group by membership
       let gid = null
 
       const tryTables = [
@@ -189,9 +194,7 @@ export default function PageAlunoNotas() {
 
       setGroup(grp)
 
-      const me = members.find(
-        m => String(m.student_id) === String(sId) || m.email === (authUser?.email || '').toLowerCase()
-      )
+      const me = members.find(m => asKey(m.student_id) === sId || m.email === (authUser?.email || '').toLowerCase())
 
       setStudentName(me?.full_name || sName || authUser?.email || 'Aluno')
 
@@ -266,7 +269,7 @@ export default function PageAlunoNotas() {
       const gmap = new Map()
       const gComments = new Map()
 
-      const fbAggreg = new Map() // subjectId -> { e1:[], e2:[] }
+      const fbAggreg = new Map() // subjectId(string) -> { e1:[], e2:[] }
 
       ;(evs || []).forEach(r => {
         const list = gmap.get(r.evaluator_role) || []
@@ -278,7 +281,7 @@ export default function PageAlunoNotas() {
         const meta = parseDeliveryKey(r.evaluator_role)
 
         if (meta && r?.comment) {
-          const subjId = meta.subjectId
+          const subjId = asKey(meta.subjectId)
           const bucket = fbAggreg.get(subjId) || { e1: [], e2: [] }
 
           const it = {
@@ -305,7 +308,7 @@ export default function PageAlunoNotas() {
       setGroupAvgByRole(gByRole)
       setGroupCommentsByRole(gComments)
 
-      // --------- INDIVIDUAL: notas + comments (sem evaluator_id no schema) ---------
+      // --------- INDIVIDUAL: notas + comments ---------
       const keysIndiv = []
 
       subj.forEach(s => {
@@ -317,32 +320,59 @@ export default function PageAlunoNotas() {
       const indiv = new Map()
       const indivComments = new Map()
 
+      // origem principal: students_evaluation
       const { data: se1 } = await supabase
         .from('students_evaluation')
         .select('role_key, score, comment')
         .eq('group_id', gid)
-        .eq('student_id', String(sId))
+        .eq('student_id', sId) // student_id é FK para auth.users
         .in('role_key', keysIndiv)
 
       ;(se1 || []).forEach(r => {
         indiv.set(r.role_key, Number(r.score || 0))
         if (r?.comment != null && !indivComments.has(r.role_key)) indivComments.set(r.role_key, String(r.comment))
-
         const meta = parseDeliveryKey(r.role_key)
 
         if (meta && r?.comment) {
-          const subjId = meta.subjectId
+          const subjId = asKey(meta.subjectId)
           const bucket = fbAggreg.get(subjId) || { e1: [], e2: [] }
 
-          const it = {
+          bucket[meta.deliveryNo === 1 ? 'e1' : 'e2'].push({
             scope: 'Individual',
             evaluatorId: null,
             evaluatorName: 'Professor',
             comment: String(r.comment)
-          }
+          })
+          fbAggreg.set(subjId, bucket)
+        }
+      })
 
-          if (meta.deliveryNo === 1) bucket.e1.push(it)
-          if (meta.deliveryNo === 2) bucket.e2.push(it)
+      // 🧯 fallback: caso alguma individual tenha sido salva por engano em `evaluations`
+      const { data: se2 } = await supabase
+        .from('evaluations')
+        .select('evaluator_role, score, comment, evaluator_id')
+        .eq('group_id', gid)
+        .in('evaluator_role', keysIndiv)
+
+      ;(se2 || []).forEach(r => {
+        if (!indiv.has(r.evaluator_role)) indiv.set(r.evaluator_role, Number(r.score || 0))
+
+        if (r?.comment != null && !indivComments.has(r.evaluator_role)) {
+          indivComments.set(r.evaluator_role, String(r.comment))
+        }
+
+        const meta = parseDeliveryKey(r.evaluator_role)
+
+        if (meta && r?.comment) {
+          const subjId = asKey(meta.subjectId)
+          const bucket = fbAggreg.get(subjId) || { e1: [], e2: [] }
+
+          bucket[meta.deliveryNo === 1 ? 'e1' : 'e2'].push({
+            scope: 'Individual',
+            evaluatorId: r.evaluator_id ?? null,
+            evaluatorName: '', // resolvido abaixo
+            comment: String(r.comment)
+          })
           fbAggreg.set(subjId, bucket)
         }
       })
@@ -350,7 +380,7 @@ export default function PageAlunoNotas() {
       setMyByRole(indiv)
       setMyCommentsByRole(indivComments)
 
-      // resolver nomes de professores para feedbacks de grupo
+      // resolver nomes dos professores (para feedbacks de grupo e fallback individual)
       const allIds = new Set()
 
       fbAggreg.forEach(({ e1, e2 }) => {
@@ -377,17 +407,15 @@ export default function PageAlunoNotas() {
       const fbFinal = new Map()
 
       fbAggreg.forEach((obj, subjId) => {
-        const fix = arr =>
+        const setName = arr =>
           arr.map(f => ({
             ...f,
             evaluatorName:
               f.evaluatorName ||
-              (f.evaluatorId
-                ? namesMap.get(f.evaluatorId) || `Professor ${f.evaluatorId}`
-                : f.evaluatorName || 'Professor')
+              (f.evaluatorId ? namesMap.get(f.evaluatorId) || `Professor ${f.evaluatorId}` : 'Professor')
           }))
 
-        fbFinal.set(subjId, { e1: fix(obj.e1), e2: fix(obj.e2) })
+        fbFinal.set(asKey(subjId), { e1: setName(obj.e1), e2: setName(obj.e2) })
       })
       setFeedbackBySubject(fbFinal)
 
@@ -395,7 +423,7 @@ export default function PageAlunoNotas() {
     })()
   }, [])
 
-  // Helpers para notas/comentários agregados
+  // Helpers
   const groupScore = (roleKey, fb = null) => (groupAvgByRole.has(roleKey) ? groupAvgByRole.get(roleKey) : fb)
   const myScore = (roleKey, fb = null) => (myByRole.has(roleKey) ? myByRole.get(roleKey) : fb)
   const groupComment = roleKey => groupCommentsByRole.get(roleKey) ?? null
@@ -406,10 +434,11 @@ export default function PageAlunoNotas() {
     const data = []
 
     subjects.forEach(s => {
-      const e1KeyG = roleKeyDelivery(1, s.id)
-      const e2KeyG = roleKeyDelivery(2, s.id)
-      const e1KeyI = roleKeyDeliveryStudent(1, s.id, studentId)
-      const e2KeyI = roleKeyDeliveryStudent(2, s.id, studentId)
+      const subjIdStr = asKey(s.id)
+      const e1KeyG = roleKeyDelivery(1, subjIdStr)
+      const e2KeyG = roleKeyDelivery(2, subjIdStr)
+      const e1KeyI = roleKeyDeliveryStudent(1, subjIdStr, studentId)
+      const e2KeyI = roleKeyDeliveryStudent(2, subjIdStr, studentId)
 
       const e1G = groupScore(e1KeyG, null)
       const e2G = groupScore(e2KeyG, null)
@@ -425,7 +454,7 @@ export default function PageAlunoNotas() {
       const weighted = round2(Number(e1Val || 0) * W_E1 + Number(e2Val || 0) * W_E2)
 
       data.push({
-        subjectId: s.id,
+        subjectId: subjIdStr,
         subject: s.name,
         e1G,
         e1I,
@@ -481,7 +510,11 @@ export default function PageAlunoNotas() {
       <CardHeader
         title={
           <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
-            <Typography variant='h6' fontWeight={900}>
+            <Typography
+              variant='h6'
+              fontWeight={900}
+              sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
               Minhas notas • {studentName || 'Aluno'}
             </Typography>
             {group?.name ? <Chip size='small' label={`Grupo: ${group.name}`} /> : null}
@@ -508,7 +541,7 @@ export default function PageAlunoNotas() {
   )
 
   const FeedbackButton = ({ subjectId, subjectName }) => {
-    const bucket = feedbackBySubject.get(String(subjectId))
+    const bucket = feedbackBySubject.get(asKey(subjectId))
     const count = (bucket?.e1?.length || 0) + (bucket?.e2?.length || 0)
 
     return (
@@ -517,10 +550,11 @@ export default function PageAlunoNotas() {
         variant='outlined'
         startIcon={<RateReviewIcon />}
         onClick={() => {
-          setFbSubject({ id: String(subjectId), name: subjectName })
+          setFbSubject({ id: asKey(subjectId), name: subjectName })
           setFbOpen(true)
         }}
         disabled={!count}
+        sx={{ ml: 0.5, mt: { xs: 1, sm: 0 } }}
       >
         Ver feedbacks {count ? `(${count})` : ''}
       </Button>
@@ -528,7 +562,7 @@ export default function PageAlunoNotas() {
   }
 
   const FeedbackDialog = () => {
-    const subjId = String(fbSubject.id || '')
+    const subjId = asKey(fbSubject.id || '')
     const subjName = fbSubject.name
     const bucket = feedbackBySubject.get(subjId) || { e1: [], e2: [] }
     const data = [...bucket.e1.map(f => ({ entrega: 'E1', ...f })), ...bucket.e2.map(f => ({ entrega: 'E2', ...f }))]
@@ -540,26 +574,28 @@ export default function PageAlunoNotas() {
           {data.length === 0 ? (
             <Alert severity='info'>Nenhum feedback registrado para esta disciplina.</Alert>
           ) : (
-            <Table size='small'>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Entrega</TableCell>
-                  <TableCell>Escopo</TableCell>
-                  <TableCell>Professor</TableCell>
-                  <TableCell>Comentário</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {data.map((r, i) => (
-                  <TableRow key={i}>
-                    <TableCell>{r.entrega}</TableCell>
-                    <TableCell>{r.scope}</TableCell>
-                    <TableCell>{r.evaluatorName}</TableCell>
-                    <TableCell style={{ whiteSpace: 'pre-wrap' }}>{r.comment}</TableCell>
+            <Box sx={{ overflowX: 'auto' }}>
+              <Table size='small' sx={{ minWidth: 600 }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Entrega</TableCell>
+                    <TableCell>Escopo</TableCell>
+                    <TableCell>Professor</TableCell>
+                    <TableCell>Comentário</TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHead>
+                <TableBody>
+                  {data.map((r, i) => (
+                    <TableRow key={i}>
+                      <TableCell>{r.entrega}</TableCell>
+                      <TableCell>{r.scope}</TableCell>
+                      <TableCell>{r.evaluatorName}</TableCell>
+                      <TableCell style={{ whiteSpace: 'pre-wrap' }}>{r.comment}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Box>
           )}
         </DialogContent>
         <DialogActions>
@@ -583,12 +619,16 @@ export default function PageAlunoNotas() {
   ) : resolveError ? null : !group ? null : (
     <Grid container spacing={2}>
       {rows.map((r, idx) => (
-        <Grid key={idx} item xs={12} md={6}>
-          <Card variant='outlined'>
+        <Grid key={idx} item xs={12} sm={12} md={6}>
+          <Card variant='outlined' sx={{ height: '100%' }}>
             <CardHeader
               title={
-                <Stack direction='row' alignItems='center' spacing={1}>
-                  <Typography variant='subtitle1' fontWeight={800}>
+                <Stack direction='row' alignItems='center' spacing={1} flexWrap='wrap'>
+                  <Typography
+                    variant='subtitle1'
+                    fontWeight={800}
+                    sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  >
                     {r.subject}
                   </Typography>
                   {r.subject !== 'Apresentação' && <FeedbackButton subjectId={r.subjectId} subjectName={r.subject} />}
@@ -598,7 +638,7 @@ export default function PageAlunoNotas() {
             <CardContent>
               {r.subject === 'Apresentação' ? (
                 <Stack spacing={1.5}>
-                  <Stack direction='row' spacing={1} alignItems='center'>
+                  <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
                     <Typography variant='body2'>Nota final que vale:</Typography>
                     <Chip size='small' color='primary' label={formatBR(r.presentation.presentVal)} />
                     {r.presentation.presentIndiv != null ? (
@@ -688,7 +728,7 @@ export default function PageAlunoNotas() {
                   </Grid>
 
                   <Grid item xs={12}>
-                    <Stack direction='row' spacing={1} alignItems='center'>
+                    <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
                       <Typography variant='caption'>
                         Soma ponderada que vale (E1×{formatBR(W_E1)} + E2×{formatBR(W_E2)})
                       </Typography>
@@ -706,7 +746,7 @@ export default function PageAlunoNotas() {
         <Card variant='outlined'>
           <CardHeader title='Resumo das Entregas (soma ponderada de todas as disciplinas)' />
           <CardContent>
-            <Stack direction='row' spacing={1} alignItems='center'>
+            <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
               <Chip color='primary' label={formatBR(deliveriesSum)} />
             </Stack>
           </CardContent>
@@ -717,80 +757,82 @@ export default function PageAlunoNotas() {
         <Card variant='outlined'>
           <CardHeader title='Quadro detalhado' />
           <CardContent>
-            <Table size='small'>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Disciplina</TableCell>
-                  <TableCell align='right'>E1 (grupo)</TableCell>
-                  <TableCell align='right'>E1 (individual)</TableCell>
-                  <TableCell align='right'>E1 que vale</TableCell>
-                  <TableCell align='right'>Feedback E1 (resumo)</TableCell>
-                  <TableCell align='right'>E2 (grupo)</TableCell>
-                  <TableCell align='right'>E2 (individual)</TableCell>
-                  <TableCell align='right'>E2 que vale</TableCell>
-                  <TableCell align='right'>Feedback E2 (resumo)</TableCell>
-                  <TableCell align='right'>Soma ponderada</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {rows
-                  .filter(r => r.subject !== 'Apresentação')
-                  .map((r, i) => (
-                    <TableRow key={i}>
-                      <TableCell>
-                        <Stack direction='row' spacing={1} alignItems='center'>
-                          <span>{r.subject}</span>
-                          <FeedbackButton subjectId={r.subjectId} subjectName={r.subject} />
-                        </Stack>
-                      </TableCell>
-                      <TableCell align='right'>{formatBR(r.e1G)}</TableCell>
-                      <TableCell align='right'>{formatBR(r.e1I)}</TableCell>
-                      <TableCell align='right'>
-                        <strong>{formatBR(r.e1Val)}</strong>
-                      </TableCell>
-                      <TableCell
-                        align='right'
-                        style={{ maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                      >
-                        {r.e1Comment || ''}
-                      </TableCell>
-                      <TableCell align='right'>{formatBR(r.e2G)}</TableCell>
-                      <TableCell align='right'>{formatBR(r.e2I)}</TableCell>
-                      <TableCell align='right'>
-                        <strong>{formatBR(r.e2Val)}</strong>
-                      </TableCell>
-                      <TableCell
-                        align='right'
-                        style={{ maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                      >
-                        {r.e2Comment || ''}
-                      </TableCell>
-                      <TableCell align='right'>
-                        <Chip size='small' color='primary' label={formatBR(r.weighted)} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                <TableRow>
-                  <TableCell colSpan={9}>
-                    <strong>Total entregas</strong>
-                  </TableCell>
-                  <TableCell align='right'>
-                    <Chip size='small' color='primary' label={formatBR(deliveriesSum)} />
-                  </TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell>
-                    <strong>Apresentação</strong>
-                  </TableCell>
-                  <TableCell colSpan={8}></TableCell>
-                  <TableCell align='right'>
-                    <strong>
-                      {formatBR(rows.find(r => r.subject === 'Apresentação')?.presentation?.presentVal ?? 0)}
-                    </strong>
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
+            <Box sx={{ overflowX: 'auto' }}>
+              <Table size='small' sx={{ minWidth: 900 }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Disciplina</TableCell>
+                    <TableCell align='right'>E1 (grupo)</TableCell>
+                    <TableCell align='right'>E1 (individual)</TableCell>
+                    <TableCell align='right'>E1 que vale</TableCell>
+                    <TableCell align='right'>Feedback E1 (resumo)</TableCell>
+                    <TableCell align='right'>E2 (grupo)</TableCell>
+                    <TableCell align='right'>E2 (individual)</TableCell>
+                    <TableCell align='right'>E2 que vale</TableCell>
+                    <TableCell align='right'>Feedback E2 (resumo)</TableCell>
+                    <TableCell align='right'>Soma ponderada</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {rows
+                    .filter(r => r.subject !== 'Apresentação')
+                    .map((r, i) => (
+                      <TableRow key={i}>
+                        <TableCell>
+                          <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
+                            <span>{r.subject}</span>
+                            <FeedbackButton subjectId={r.subjectId} subjectName={r.subject} />
+                          </Stack>
+                        </TableCell>
+                        <TableCell align='right'>{formatBR(r.e1G)}</TableCell>
+                        <TableCell align='right'>{formatBR(r.e1I)}</TableCell>
+                        <TableCell align='right'>
+                          <strong>{formatBR(r.e1Val)}</strong>
+                        </TableCell>
+                        <TableCell
+                          align='right'
+                          style={{ maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                        >
+                          {r.e1Comment || ''}
+                        </TableCell>
+                        <TableCell align='right'>{formatBR(r.e2G)}</TableCell>
+                        <TableCell align='right'>{formatBR(r.e2I)}</TableCell>
+                        <TableCell align='right'>
+                          <strong>{formatBR(r.e2Val)}</strong>
+                        </TableCell>
+                        <TableCell
+                          align='right'
+                          style={{ maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                        >
+                          {r.e2Comment || ''}
+                        </TableCell>
+                        <TableCell align='right'>
+                          <Chip size='small' color='primary' label={formatBR(r.weighted)} />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  <TableRow>
+                    <TableCell colSpan={9}>
+                      <strong>Total entregas</strong>
+                    </TableCell>
+                    <TableCell align='right'>
+                      <Chip size='small' color='primary' label={formatBR(deliveriesSum)} />
+                    </TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell>
+                      <strong>Apresentação</strong>
+                    </TableCell>
+                    <TableCell colSpan={8}></TableCell>
+                    <TableCell align='right'>
+                      <strong>
+                        {formatBR(rows.find(r => r.subject === 'Apresentação')?.presentation?.presentVal ?? 0)}
+                      </strong>
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </Box>
           </CardContent>
         </Card>
       </Grid>
