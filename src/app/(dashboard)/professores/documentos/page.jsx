@@ -36,8 +36,8 @@ import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline'
 // ======= Supabase client (mantive suas envs) =======
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_URL
-const supabaseKey = process.env.NEXT_PUBLIC_ANON_KEY
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 const supabase = createClient(supabaseUrl, supabaseKey)
 
 // ======= Atalhos fixos (seus links) =======

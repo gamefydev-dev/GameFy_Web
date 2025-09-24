@@ -130,6 +130,9 @@ const VerticalMenu = ({ scrollMenu }) => {
           <MenuItem href='/alunos/notas' icon={<i className='ri-file-list-3-line' />}>
             Notas dos PIs
           </MenuItem>
+          <MenuItem href='/precadastro' icon={<i className='ri-user-add-line' />}>
+            Pré-cadastro de Alunos
+          </MenuItem>
         </MenuSection>
       </Menu>
     </ScrollWrapper>

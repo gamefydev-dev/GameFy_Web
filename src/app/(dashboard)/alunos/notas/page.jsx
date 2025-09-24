@@ -32,27 +32,24 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import InfoIcon from '@mui/icons-material/InfoOutlined'
 import PersonIcon from '@mui/icons-material/Person'
 import GroupsIcon from '@mui/icons-material/Groups'
-import LinkIcon from '@mui/icons-material/Link'
 
 import { supabase } from '@/libs/supabaseAuth'
 
-// ---------------------------------- Utils ----------------------------------
-const clamp10 = n => Math.min(10, Math.max(0, Number.isFinite(n) ? n : 0))
-const round2 = n => Number((Math.round(n * 100) / 100).toFixed(2))
-const norm = v => (v ?? '').toString().trim()
+// ===================== Utils ======================
+const round2 = n => Number((Math.round(Number(n || 0) * 100) / 100).toFixed(2))
 
 const formatBR = n =>
   n == null || Number.isNaN(n)
     ? ''
-    : n.toLocaleString('pt-BR', { minimumFractionDigits: n % 1 ? 1 : 0, maximumFractionDigits: 2 })
+    : Number(n).toLocaleString('pt-BR', { minimumFractionDigits: n % 1 ? 1 : 0, maximumFractionDigits: 2 })
 
 const W_E1 = 0.06
 const W_E2 = 0.08
 
 const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${subjectId}`
 
-const roleKeyDeliveryStudent = (deliveryNo, subjectId, studentId) =>
-  `delivery_${deliveryNo}:subject_${subjectId}:student_${studentId}`
+// <<< IMPORTANTE: a leitura do individual usa a MESMA chave das entregas de grupo
+const roleKeyDeliveryStudent = (deliveryNo, subjectId, _studentId) => `delivery_${deliveryNo}:subject_${subjectId}`
 
 const roleKeyPresentationCriterion = crit => `presentation:${crit}`
 const roleKeyPresentationFinalStudent = studentId => `presentation:final:student_${studentId}`
@@ -64,12 +61,13 @@ const PRESENT_CRITERIA = [
   { key: 'organization', label: 'Organização' }
 ]
 
-const inferCourseFromClassName = (name = '') => {
-  const n = name.toLowerCase()
+const normalizeCourseForSubjects = categoryFromView => {
+  const c = (categoryFromView || '').toUpperCase()
 
-  if (n.includes('ads')) return 'ADS'
+  if (c.startsWith('CCOMP')) return 'CCOMP'
+  if (c.includes('ADS')) return 'ADS'
 
-  return 'CCOMP'
+  return c || null
 }
 
 const getGroupGithubUrl = group => {
@@ -82,7 +80,7 @@ const getGroupGithubUrl = group => {
   return n(firstMember?.github)
 }
 
-// ---------------------------------- Page ----------------------------------
+// ===================== Página =====================
 export default function PageAlunoNotas() {
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState(null)
@@ -92,19 +90,25 @@ export default function PageAlunoNotas() {
   const [subjects, setSubjects] = useState([])
   const [search, setSearch] = useState('')
 
-  // notas por papel
-  const [groupAvgByRole, setGroupAvgByRole] = useState(new Map()) // média do grupo (evaluations)
-  const [myByRole, setMyByRole] = useState(new Map()) // minha nota individual (students_evaluation)
+  const [courseFromView, setCourseFromView] = useState(null)
+  const [semesterFromView, setSemesterFromView] = useState(null)
+  const [resolveError, setResolveError] = useState(null)
+
+  const [groupAvgByRole, setGroupAvgByRole] = useState(new Map())
+  const [myByRole, setMyByRole] = useState(new Map())
 
   useEffect(() => {
     ;(async () => {
       setLoading(true)
+      setResolveError(null)
+
+      // auth
       const { data: u } = await supabase.auth.getUser()
       const authUser = u?.user || null
 
       setUser(authUser)
 
-      // Resolve aluno e grupo (por user_id ou email)
+      // students (id/nome)
       let sId = authUser?.id || null
       let sName = null
 
@@ -121,7 +125,9 @@ export default function PageAlunoNotas() {
         }
       } catch {}
 
-      // Encontra group_id
+      setStudentId(sId)
+
+      // group by membership
       let gid = null
 
       const tryTables = [
@@ -145,14 +151,15 @@ export default function PageAlunoNotas() {
 
       if (!gid) {
         setLoading(false)
+        setResolveError('Não encontramos seu grupo. Verifique com o coordenador.')
 
         return
       }
 
-      // Grupo + membros
+      // grupo + membros
       const { data: gs } = await supabase
         .from('pi_groups')
-        .select('id, name, code, semester, github_url, class_id, class:classes(name, course, semester)')
+        .select('id, name, code, semester, github_url, class_id, class:classes(name)')
         .eq('id', gid)
         .maybeSingle()
 
@@ -175,21 +182,57 @@ export default function PageAlunoNotas() {
       const grp = { ...gs, members }
 
       setGroup(grp)
-      setStudentId(sId)
+
       const me = members.find(m => m.student_id === sId || m.email === (authUser?.email || '').toLowerCase())
 
       setStudentName(me?.full_name || sName || authUser?.email || 'Aluno')
 
-      // Disciplinas da turma
-      const course = gs?.class?.course ?? inferCourseFromClassName(gs?.class?.name || '')
-      const semester = gs?.class?.semester ?? gs?.semester ?? null
+      // Curso/Semestre pela VIEW v_precadastro_normalizado
+      let vrow = null
+
+      try {
+        const { data: v1 } = await supabase
+          .from('v_precadastro_normalizado')
+          .select('email, group_id, category, semester')
+          .eq('email', (authUser?.email || '').toLowerCase())
+          .eq('group_id', gid)
+          .maybeSingle()
+
+        vrow = v1 || null
+
+        if (!vrow) {
+          const { data: v2 } = await supabase
+            .from('v_precadastro_normalizado')
+            .select('email, group_id, category, semester')
+            .eq('email', (authUser?.email || '').toLowerCase())
+            .limit(1)
+            .maybeSingle()
+
+          vrow = v2 || null
+        }
+      } catch {}
+
+      const category = vrow?.category || null
+      const semester = Number.isFinite(Number(vrow?.semester)) ? Number(vrow?.semester) : null
+
+      setCourseFromView(category)
+      setSemesterFromView(semester)
+
+      if (!category || !semester) {
+        setResolveError('Não foi possível resolver curso e/ou semestre pela view SQL. Verifique a base.')
+        setLoading(false)
+
+        return
+      }
+
+      // subjects
+      const courseForSubjects = normalizeCourseForSubjects(category)
       let subj = []
 
       try {
         let q = supabase.from('subjects').select('id, name, course, semester, has_delivery')
 
-        if (course) q = q.eq('course', course)
-        if (semester != null) q = q.eq('semester', semester)
+        q = q.eq('course', courseForSubjects).eq('semester', semester)
         const { data: sdata } = await q.order('name', { ascending: true })
 
         subj = (sdata || []).filter(s => s.has_delivery !== false)
@@ -197,7 +240,7 @@ export default function PageAlunoNotas() {
 
       setSubjects(subj)
 
-      // ------------------ Notas do GRUPO (média) ------------------
+      // ---- notas do GRUPO (média) ----
       const roleKeys = []
 
       subj.forEach(s => {
@@ -230,16 +273,20 @@ export default function PageAlunoNotas() {
       })
       setGroupAvgByRole(gByRole)
 
-      // ------------------ Notas INDIVIDUAIS (student) ------------------
+      // ---- notas INDIVIDUAIS ----
+      // (entregas) MESMA chave das entregas de grupo
       const keysIndiv = []
 
       subj.forEach(s => {
         keysIndiv.push(roleKeyDeliveryStudent(1, s.id, sId))
         keysIndiv.push(roleKeyDeliveryStudent(2, s.id, sId))
       })
+
+      // (apresentação final individual)
       keysIndiv.push(roleKeyPresentationFinalStudent(sId))
 
-      // Fonte 1: students_evaluation (preferida)
+      const indiv = new Map()
+
       const { data: se1 } = await supabase
         .from('students_evaluation')
         .select('role_key, score')
@@ -247,11 +294,9 @@ export default function PageAlunoNotas() {
         .eq('student_id', sId)
         .in('role_key', keysIndiv)
 
-      const indiv = new Map()
-
       ;(se1 || []).forEach(r => indiv.set(r.role_key, Number(r.score || 0)))
 
-      // Fonte 2 (fallback): evaluations com evaluator_role específico do aluno
+      // (fallback: se algum dia tiverem salvo em evaluations com a mesma chave)
       const { data: se2 } = await supabase
         .from('evaluations')
         .select('evaluator_role, score')
@@ -261,12 +306,11 @@ export default function PageAlunoNotas() {
       ;(se2 || []).forEach(r => indiv.set(r.evaluator_role, Number(r.score || 0)))
 
       setMyByRole(indiv)
-
       setLoading(false)
     })()
   }, [])
 
-  // Helpers de leitura
+  // Helpers
   const groupScore = (roleKey, fb = null) => (groupAvgByRole.has(roleKey) ? groupAvgByRole.get(roleKey) : fb)
   const myScore = (roleKey, fb = null) => (myByRole.has(roleKey) ? myByRole.get(roleKey) : fb)
 
@@ -279,23 +323,11 @@ export default function PageAlunoNotas() {
       const e2G = groupScore(roleKeyDelivery(2, s.id), null)
       const e1I = myScore(roleKeyDeliveryStudent(1, s.id, studentId), null)
       const e2I = myScore(roleKeyDeliveryStudent(2, s.id, studentId), null)
-
-      // valor que conta (individual > grupo)
       const e1Val = e1I != null ? e1I : e1G
       const e2Val = e2I != null ? e2I : e2G
-
       const weighted = round2(Number(e1Val || 0) * W_E1 + Number(e2Val || 0) * W_E2)
 
-      data.push({
-        subject: s.name,
-        e1G,
-        e1I,
-        e1Val,
-        e2G,
-        e2I,
-        e2Val,
-        weighted
-      })
+      data.push({ subject: s.name, e1G, e1I, e1Val, e2G, e2I, e2Val, weighted })
     })
 
     // apresentação
@@ -309,10 +341,7 @@ export default function PageAlunoNotas() {
     const presentIndiv = myScore(roleKeyPresentationFinalStudent(studentId), null)
     const presentVal = presentIndiv != null ? presentIndiv : presentGroupAvg
 
-    data.push({
-      subject: 'Apresentação',
-      presentation: { critGroup, presentGroupAvg, presentIndiv, presentVal }
-    })
+    data.push({ subject: 'Apresentação', presentation: { critGroup, presentGroupAvg, presentIndiv, presentVal } })
 
     return data
   }, [group, subjects, groupAvgByRole, myByRole, studentId])
@@ -323,9 +352,11 @@ export default function PageAlunoNotas() {
     return round2(onlySubjects.reduce((acc, r) => acc + Number(r.weighted || 0), 0))
   }, [rows])
 
-  // ---------------------------------- UI ----------------------------------
+  // ===================== UI ======================
   const header = loading ? (
     <Skeleton variant='rounded' height={120} />
+  ) : resolveError ? (
+    <Alert severity='warning'>{resolveError}</Alert>
   ) : !group ? (
     <Alert severity='warning'>Não encontramos seu grupo. Verifique com o coordenador.</Alert>
   ) : (
@@ -344,41 +375,14 @@ export default function PageAlunoNotas() {
               icon={<GroupIcon fontSize='small' />}
               label={`${group?.members?.length || 0} integrante(s)`}
             />
-            {getGroupGithubUrl(group) ? (
-              <>
-                <Tooltip title='Abrir repositório'>
-                  <IconButton
-                    size='small'
-                    color='primary'
-                    onClick={() => {
-                      const url = getGroupGithubUrl(group)
-
-                      if (url) window.open(url.startsWith('http') ? url : `https://${url}`, '_blank')
-                    }}
-                  >
-                    <OpenInNewIcon fontSize='small' />
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title='Copiar link do repositório'>
-                  <IconButton
-                    size='small'
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(getGroupGithubUrl(group))
-                      } catch {}
-                    }}
-                  >
-                    <ContentCopyIcon fontSize='small' />
-                  </IconButton>
-                </Tooltip>
-              </>
-            ) : null}
           </Stack>
         }
         subheader={
           <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
             <InfoIcon fontSize='small' />
             <Typography variant='body2'>
+              Disciplinas filtradas pela <strong>categoria/curso</strong> da view <code>v_precadastro_normalizado</code>{' '}
+              (<strong>{courseFromView || '—'}</strong>) e pelo <strong>semestre</strong> ({semesterFromView ?? '—'}).
               Quando existir nota <strong>individual</strong>, ela prevalece sobre a nota do <strong>grupo</strong>.
             </Typography>
           </Stack>
@@ -398,7 +402,7 @@ export default function PageAlunoNotas() {
         ))}
       </Grid>
     </Box>
-  ) : !group ? null : (
+  ) : resolveError ? null : !group ? null : (
     <Grid container spacing={2}>
       {rows.map((r, idx) => (
         <Grid key={idx} item xs={12} md={6}>
@@ -447,7 +451,6 @@ export default function PageAlunoNotas() {
                 <Grid container spacing={1.5}>
                   <Grid item xs={12}>
                     <Stack spacing={1}>
-                      {/* E1 */}
                       <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
                         <Typography variant='body2'>1ª Entrega (peso {formatBR(W_E1)}):</Typography>
                         <Chip size='small' color='primary' label={formatBR(r.e1Val)} />
@@ -466,7 +469,6 @@ export default function PageAlunoNotas() {
                           />
                         )}
                       </Stack>
-                      {/* E2 */}
                       <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
                         <Typography variant='body2'>2ª Entrega (peso {formatBR(W_E2)}):</Typography>
                         <Chip size='small' color='primary' label={formatBR(r.e2Val)} />
