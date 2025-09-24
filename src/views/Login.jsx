@@ -18,6 +18,7 @@ import Checkbox from '@mui/material/Checkbox'
 import Button from '@mui/material/Button'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import Divider from '@mui/material/Divider'
+import ButtonGroup from '@mui/material/ButtonGroup'
 
 // Component Imports
 import Logo from '@components/layout/shared/Logo'
@@ -30,13 +31,14 @@ import themeConfig from '@configs/themeConfig'
 import { useImageVariant } from '@core/hooks/useImageVariant'
 
 // Auth Helpers (Supabase)
-import { signInWithEmail, signInWithProvider } from '@/libs/supabaseAuth'
+import { signInWithEmail, signInWithProvider, fetchCurrentProfile } from '@/libs/supabaseAuth'
 
 const Login = ({ mode }) => {
   // States
   const [isPasswordShown, setIsPasswordShown] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const [loading, setLoading] = useState(false)
+  const [role, setRole] = useState('student') // 'student' | 'professor'
 
   // Vars
   const darkImg = '/images/pages/auth-v1-mask-dark.png'
@@ -66,7 +68,27 @@ const Login = ({ mode }) => {
         return
       }
 
-      router.push('/') // pós-login
+      // valida papel após login
+      const { role: detectedRole } = await fetchCurrentProfile()
+
+      if (role === 'student' && detectedRole !== 'student') {
+        setErrorMsg('Esta conta não é de aluno. Escolha "Sou Professor" ou use outra conta.')
+        setLoading(false)
+
+        return
+      }
+
+      if (role === 'professor' && detectedRole !== 'professor') {
+        setErrorMsg('Esta conta não é de professor. Escolha "Sou Aluno" ou use outra conta.')
+        setLoading(false)
+
+        return
+      }
+
+      // redireciona por papel
+      if (detectedRole === 'professor') router.push('/')
+      else if (detectedRole === 'student') router.push('/alunos/notas')
+      else router.push('/') // fallback
     } catch {
       setErrorMsg('Não foi possível entrar. Tente novamente.')
       setLoading(false)
@@ -102,6 +124,16 @@ const Login = ({ mode }) => {
                 Faça login para continuar sua jornada gamificada de aprendizado.
               </Typography>
             </div>
+
+            {/* Seletor de papel */}
+            <ButtonGroup fullWidth variant='outlined' className='mb-2'>
+              <Button onClick={() => setRole('student')} variant={role === 'student' ? 'contained' : 'outlined'}>
+                Sou Aluno
+              </Button>
+              <Button onClick={() => setRole('professor')} variant={role === 'professor' ? 'contained' : 'outlined'}>
+                Sou Professor
+              </Button>
+            </ButtonGroup>
 
             {errorMsg ? (
               <Typography role='alert' color='error'>

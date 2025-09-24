@@ -5,7 +5,6 @@ import { createClient } from '@supabase/supabase-js'
 
 // Aceita os dois conjuntos de variáveis (as “padrão” e as suas atuais)
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_URL
-
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_ANON_KEY
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -111,6 +110,56 @@ export async function updatePassword(newPassword) {
   return { data, error }
 }
 
+// ---------- student/professor helpers ----------
+export async function signUpStudent({ email, password, metadata = {} }) {
+  // 1) cria conta no Auth
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: { data: { ...metadata, role: 'student' } }
+  })
+
+  if (error) return { data, error }
+
+  // 2) insere/atualiza no students (idempotente)
+  const userId = data?.user?.id
+
+  if (userId) {
+    const insert = {
+      id: userId,
+      email,
+      name: metadata?.name ?? null,
+      ra: metadata?.ra ?? null,
+      class_code: metadata?.class_code ?? null
+    }
+
+    // upsert evita erro de PK duplicada quando já existe a linha
+    const { error: err2 } = await supabase.from('students').upsert(insert, { onConflict: 'id' }).select().single()
+
+    if (err2) return { data, error: err2 }
+  }
+
+  return { data, error: null }
+}
+
+// Busca o perfil (student ou professor)
+export async function fetchCurrentProfile() {
+  const { data: authUser } = await supabase.auth.getUser()
+  const user = authUser?.user ?? null
+
+  if (!user) return { role: null, profile: null }
+
+  const { data: s } = await supabase.from('students').select('*').eq('id', user.id).maybeSingle()
+
+  if (s) return { role: 'student', profile: s }
+
+  const { data: p } = await supabase.from('professors').select('*').eq('id', user.id).maybeSingle()
+
+  if (p) return { role: 'professor', profile: p }
+
+  return { role: null, profile: null }
+}
+
 // ---------- gate admin ----------
 export const ADMIN_ROLES = ['owner', 'admin', 'administrator', 'professor', 'coordenador', 'coordinator']
 
@@ -119,11 +168,6 @@ const norm = s =>
     .trim()
     .toLowerCase()
 
-/**
- * Organizações nas quais o usuário tem papel “admin”
- * (lê organization_members e tenta enriquecer com organizations;
- * se RLS bloquear organizations, retorna só os IDs)
- */
 export async function getAdminOrgs() {
   const user = await getSessionUser()
 
@@ -139,15 +183,11 @@ export async function getAdminOrgs() {
   if (!allowed.length) return []
 
   const orgIds = [...new Set(allowed.map(r => r.organization_id))]
-
   const { data: orgs } = await supabase.from('organizations').select('id, name, slug').in('id', orgIds)
 
   return orgs?.length ? orgs : orgIds.map(id => ({ id }))
 }
 
-/**
- * Retorna true se o usuário for admin (metadata, profiles, org_members)
- */
 export async function isAdmin() {
   const user = await getSessionUser()
 
@@ -170,7 +210,7 @@ export async function isAdmin() {
     // const { data: prof } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
     // if (prof?.role && ADMIN_ROLES.includes(norm(prof.role))) return true
   } catch {
-    /* ignore se não existir */
+    /* ignore */
   }
 
   // 3) organization_members.role

@@ -1,4 +1,8 @@
+'use client'
+
 // Third-party Imports
+import Link from 'next/link'
+
 import classnames from 'classnames'
 
 // Component Imports
@@ -13,7 +17,11 @@ const VerticalLayout = props => {
 
   return (
     <div className={classnames(verticalLayoutClasses.root, 'flex flex-auto')}>
-      {navigation || null}
+      <div className={verticalLayoutClasses.navContainer}>
+        {navigation || null}
+        {/* Link fixo para notas dos alunos */}
+        <Link href='/alunos/notas'>Minhas Notas</Link>
+      </div>
       <div className={classnames(verticalLayoutClasses.contentWrapper, 'flex flex-col min-is-0 is-full')}>
         {navbar || null}
         {/* Content */}
