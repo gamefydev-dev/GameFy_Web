@@ -53,7 +53,6 @@ import { supabase } from '@/libs/supabaseAuth'
 const clamp10 = n => Math.min(10, Math.max(0, Number.isFinite(n) ? n : 0))
 const round2 = n => Number((Math.round(n * 100) / 100).toFixed(2))
 const norm = v => (v ?? '').toString().trim()
-const asKey = v => String(v) // 👈 garante string para UUID/number
 
 const formatBR = n => {
   if (n == null || Number.isNaN(n)) return ''
@@ -94,13 +93,13 @@ const SUBJECTS_TO_SKIP = ({ course, semester, name }) => {
   return false
 }
 
-const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${asKey(subjectId)}`
+const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${String(subjectId)}`
 
 const roleKeyDeliveryStudent = (deliveryNo, subjectId, studentId) =>
-  `delivery_${deliveryNo}:subject_${asKey(subjectId)}:student_${asKey(studentId)}`
+  `delivery_${deliveryNo}:subject_${String(subjectId)}:student_${String(studentId)}`
 
 const roleKeyPresentationCriterion = crit => `presentation:${crit}`
-const roleKeyPresentationFinalStudent = studentKey => `presentation:final:student_${asKey(studentKey)}`
+const roleKeyPresentationFinalStudent = studentKey => `presentation:final:student_${String(studentKey)}`
 
 // -------------------------------------------------------------
 // Componente
@@ -236,7 +235,6 @@ export default function PageAvaliacoes() {
               const id = c.id || row.class_id
 
               if (!id) return
-
               const prev = map.get(id)
 
               const semester_int_fallback = Math.min(
@@ -298,7 +296,7 @@ export default function PageAvaliacoes() {
 
               if (!by.has(gid)) by.set(gid, [])
               by.get(gid).push({
-                student_id: r.student_user_id || r.student_id || null, // pode ser user_id
+                student_id: r.student_user_id || r.student_id || null, // pode ser user_id ou students.id
                 student_user_id: r.student_user_id || null,
                 full_name: r.full_name || null,
                 email: (r.email || '').toLowerCase() || null,
@@ -470,56 +468,67 @@ export default function PageAvaliacoes() {
     }
   }
 
-  // Individual → students_evaluation (nota + comentário)
+  // Individual → students_evaluation (nota + comentário) — usa SEMPRE auth.users.id
   const upsertStudentEvaluation = async ({ groupId, studentId, roleKey, value, text }) => {
+    if (!studentId) throw new Error('studentId não resolvido (UUID do auth.users)')
+
     const payload = {
-      group_id: groupId, // geralmente number
-      student_id: String(studentId), // 👈 coerção para string (UUID/text)
-      role_key: String(roleKey), // 👈 sempre string para bater com o leitor
+      group_id: groupId,
+      student_id: String(studentId),
+      role_key: String(roleKey),
       score: round2(clamp10(value)),
-      comment: norm(text || ''),
-      evaluator_id: user.id // caso sua tabela não tenha essa coluna, remova
+      comment: norm(text || '')
     }
 
-    try {
-      // caminho seguro para quem não tem constraint unique
-      const { data: existing, error: selErr } = await supabase
-        .from('students_evaluation')
-        .select('id')
-        .eq('group_id', groupId)
-        .eq('student_id', String(studentId))
-        .eq('role_key', String(roleKey))
-        .maybeSingle()
+    // caminho seguro p/ quem não tem constraint unique (você tem, mas mantemos)
+    const { data: existing, error: selErr } = await supabase
+      .from('students_evaluation')
+      .select('id')
+      .eq('group_id', groupId)
+      .eq('student_id', String(studentId))
+      .eq('role_key', String(roleKey))
+      .maybeSingle()
 
-      if (selErr) throw selErr
+    if (selErr) throw selErr
 
-      if (existing?.id) {
-        const { error } = await supabase.from('students_evaluation').update(payload).eq('id', existing.id)
+    if (existing?.id) {
+      const { error } = await supabase.from('students_evaluation').update(payload).eq('id', existing.id)
 
-        if (error) throw error
-      } else {
-        const { error } = await supabase.from('students_evaluation').insert(payload)
-
-        if (error) throw error
-      }
-    } catch {
-      // se houver unique (group_id,student_id,role_key) isso funciona
-      const { error } = await supabase.from('students_evaluation').upsert(payload)
+      if (error) throw error
+    } else {
+      const { error } = await supabase.from('students_evaluation').insert(payload)
 
       if (error) throw error
     }
   }
 
-  // ---------------------------------- Resolver CHAVE do aluno (igual tela do aluno) ----------------------------------
+  // ---------------------------------- Resolver CHAVE do aluno (sempre auth.users.id) ----------------------------------
   const resolveStudentKey = async member => {
-    if (member?.student_user_id) return member.student_user_id
-    if (member?.student_id) return member.student_id
+    // 1) veio diretamente do membership?
+    if (member?.student_user_id) return String(member.student_user_id)
+
+    // 2) veio student_id possivelmente de students.id -> procurar user_id
+    if (member?.student_id) {
+      const { data: s1 } = await supabase.from('students').select('user_id').eq('id', member.student_id).maybeSingle()
+
+      if (s1?.user_id) return String(s1.user_id)
+    }
+
+    // 3) por e-mail na tabela students
     const email = (member?.email || '').toLowerCase().trim()
 
-    if (!email) return null
-    const { data } = await supabase.from('students').select('id, user_id, email').ilike('email', email).maybeSingle()
+    if (email) {
+      const { data: s2 } = await supabase.from('students').select('user_id').ilike('email', email).maybeSingle()
 
-    return data?.user_id || data?.id || null
+      if (s2?.user_id) return String(s2.user_id)
+
+      // 4) fallback por profiles (id = auth.users.id)
+      const { data: p } = await supabase.from('profiles').select('id').ilike('email', email).maybeSingle()
+
+      if (p?.id) return String(p.id)
+    }
+
+    return null
   }
 
   // ---------------------------------- UI Helpers ----------------------------------
@@ -629,7 +638,7 @@ export default function PageAvaliacoes() {
     setComment(prev?.comment ?? '')
     setCommentTouched(false)
 
-    // resolve CHAVE (user_id |> students.id)
+    // resolve CHAVE (sempre auth.users.id)
     const resolvedMembers = []
 
     for (const m of group.members || []) {
@@ -638,7 +647,6 @@ export default function PageAvaliacoes() {
       resolvedMembers.push({ ...m, student_key: sk })
     }
 
-    // iniciam vazios (não grava nada por padrão)
     setIndiv(resolvedMembers.map(m => ({ student: m, value: '', changed: false })))
     setCopyToAll(false)
     setDlgOpen(true)
@@ -705,41 +713,45 @@ export default function PageAvaliacoes() {
         // 1) Grupo → evaluations (nota + feedback)
         await upsertEvaluation({
           groupId: group.id,
-          roleKey: roleKeyDelivery(deliveryNo, String(subject.id)),
+          roleKey: roleKeyDelivery(deliveryNo, subject.id),
           value: score,
           text: comment
         })
 
         // 2) Individuais → students_evaluation (nota + feedback)
         const toSave = []
+        const unresolved = []
 
-        // se o prof não preencheu individuais e não marcou copiar, gravamos a do grupo p/ todos (opcional)
-        if (copyToAll || (indiv && indiv.every(x => x.value === '' || x.changed === false))) {
-          for (const it of indiv) {
-            const sid = it.student?.student_key
+        for (const it of indiv) {
+          const sid = it.student?.student_key
 
-            if (!sid) continue
-            toSave.push({ sid: String(sid), val: score })
+          if (!sid) {
+            unresolved.push(it.student?.email || it.student?.full_name || '(sem identificação)')
+            continue
           }
-        } else {
-          for (const it of indiv) {
-            const sid = it.student?.student_key
 
-            if (!sid) continue
-
-            if (it.changed && it.value !== '' && Number.isFinite(Number(it.value))) {
-              toSave.push({ sid: String(sid), val: Number(it.value) })
-            }
+          if (copyToAll) {
+            toSave.push({ sid: String(sid), val: score })
+          } else if (it.changed && it.value !== '' && Number.isFinite(Number(it.value))) {
+            toSave.push({ sid: String(sid), val: Number(it.value) })
           }
         }
 
         for (const item of toSave) {
           await upsertStudentEvaluation({
             groupId: group.id,
-            studentId: String(item.sid),
-            roleKey: roleKeyDeliveryStudent(deliveryNo, String(subject.id), String(item.sid)),
+            studentId: item.sid,
+            roleKey: roleKeyDeliveryStudent(deliveryNo, subject.id, item.sid),
             value: item.val,
             text: `(individual) ${comment}`
+          })
+        }
+
+        if (unresolved.length) {
+          setSnack({
+            open: true,
+            sev: 'warning',
+            msg: `Alguns alunos não foram salvos (sem vincular ao auth.users): ${unresolved.join(', ')}`
           })
         }
 
@@ -757,33 +769,38 @@ export default function PageAvaliacoes() {
 
         // Individuais (apresentação final) → students_evaluation (nota + feedback)
         const toSave = []
+        const unresolved = []
 
-        if (copyToAll || (indiv && indiv.every(x => x.value === '' || x.changed === false))) {
-          for (const it of indiv) {
-            const sid = it.student?.student_key
+        for (const it of indiv) {
+          const sid = it.student?.student_key
 
-            if (!sid) continue
-            toSave.push({ sid: String(sid), val: Number(score || 0) })
+          if (!sid) {
+            unresolved.push(it.student?.email || it.student?.full_name || '(sem identificação)')
+            continue
           }
-        } else {
-          for (const it of indiv) {
-            const sid = it.student?.student_key
 
-            if (!sid) continue
-
-            if (it.changed && it.value !== '' && Number.isFinite(Number(it.value))) {
-              toSave.push({ sid: String(sid), val: Number(it.value) })
-            }
+          if (copyToAll) {
+            toSave.push({ sid: String(sid), val: Number(score || 0) })
+          } else if (it.changed && it.value !== '' && Number.isFinite(Number(it.value))) {
+            toSave.push({ sid: String(sid), val: Number(it.value) })
           }
         }
 
         for (const item of toSave) {
           await upsertStudentEvaluation({
             groupId: group.id,
-            studentId: String(item.sid),
-            roleKey: roleKeyPresentationFinalStudent(String(item.sid)),
+            studentId: item.sid,
+            roleKey: roleKeyPresentationFinalStudent(item.sid),
             value: item.val,
             text: `(individual apresentação) ${comment}`
+          })
+        }
+
+        if (unresolved.length) {
+          setSnack({
+            open: true,
+            sev: 'warning',
+            msg: `Alguns alunos não foram salvos (sem vincular ao auth.users): ${unresolved.join(', ')}`
           })
         }
 
@@ -793,11 +810,7 @@ export default function PageAvaliacoes() {
       setDlgOpen(false)
     } catch (e) {
       console.error(e)
-      setSnack({
-        open: true,
-        msg: `Erro ao salvar: ${e?.message || e || 'desconhecido'}`,
-        sev: 'error'
-      })
+      setSnack({ open: true, msg: 'Erro ao salvar.', sev: 'error' })
     }
   }
 

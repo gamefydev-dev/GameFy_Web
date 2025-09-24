@@ -147,7 +147,7 @@ const VerticalMenu = ({ scrollMenu }) => {
         {/* CONVITES — apenas professor/admin */}
         {!isStudent && (
           <MenuSection label='Convites'>
-            <MenuItem href='/professores/convites' icon={<i className='ri-presentation-line' />}>
+            <MenuItem href='/precadastro-professores' icon={<i className='ri-presentation-line' />}>
               Convite de Professores
             </MenuItem>
             <MenuItem href='/atribuir' icon={<i className='ri-graduation-cap-line' />}>
