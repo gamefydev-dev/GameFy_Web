@@ -22,6 +22,7 @@ import {
   Alert,
   Snackbar,
   InputAdornment,
+  Slider,
   Divider,
   Checkbox,
   Table,
@@ -29,13 +30,19 @@ import {
   TableRow,
   TableCell,
   TableBody,
+  IconButton,
   Tooltip,
   Switch,
   FormControlLabel
 } from '@mui/material'
 import SearchIcon from '@mui/icons-material/Search'
-import VisibilityIcon from '@mui/icons-material/Visibility'
+import StarRoundedIcon from '@mui/icons-material/StarRounded'
+import DoNotDisturbIcon from '@mui/icons-material/DoNotDisturb'
+import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord'
 import GroupIcon from '@mui/icons-material/Groups2'
+import AddIcon from '@mui/icons-material/Add'
+import RemoveIcon from '@mui/icons-material/Remove'
+import VisibilityIcon from '@mui/icons-material/Visibility'
 import LinkIcon from '@mui/icons-material/Link'
 
 import { supabase } from '@/libs/supabaseAuth'
@@ -44,15 +51,24 @@ import { supabase } from '@/libs/supabaseAuth'
 // Helpers & Constantes
 // -------------------------------------------------------------
 const clamp10 = n => Math.min(10, Math.max(0, Number.isFinite(n) ? n : 0))
-const round2 = n => Number((Math.round(Number(n || 0) * 100) / 100).toFixed(2))
+const round2 = n => Number((Math.round(n * 100) / 100).toFixed(2))
 const norm = v => (v ?? '').toString().trim()
 
-const formatBR = n =>
-  n == null || Number.isNaN(n)
-    ? ''
-    : Number(n).toLocaleString('pt-BR', { minimumFractionDigits: n % 1 ? 1 : 0, maximumFractionDigits: 2 })
+const formatBR = n => {
+  if (n == null || Number.isNaN(n)) return ''
 
-const ROLE_LABEL = { delivery_1: '1ª Entrega', delivery_2: '2ª Entrega', presentation: 'Apresentação' }
+  return Number(n).toLocaleString('pt-BR', { minimumFractionDigits: n % 1 ? 1 : 0, maximumFractionDigits: 2 })
+}
+
+const marks = Array.from({ length: 11 }, (_, i) => ({ value: i, label: i }))
+
+const ROLE_LABEL = {
+  delivery_1: '1ª Entrega',
+  delivery_2: '2ª Entrega',
+  presentation: 'Apresentação',
+  system_final: 'Nota Final'
+}
+
 const W_E1 = 0.06
 const W_E2 = 0.08
 
@@ -63,14 +79,6 @@ const PRESENT_CRITERIA = [
   { key: 'organization', label: 'Organização' }
 ]
 
-// CHAVES CANÔNICAS
-const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${subjectId}`
-
-// >>> NÃO use :student_... nas entregas individuais
-const roleKeyPresentationCriterion = crit => `presentation:${crit}`
-const roleKeyPresentationFinalStudent = studentId => `presentation:final:student_${studentId}`
-
-// Disciplinas que não contam entrega (exemplo Business English)
 const SUBJECTS_TO_SKIP = ({ course, semester, name }) => {
   const nm = (name || '').toLowerCase()
   const isEnglish = nm.includes('business english')
@@ -85,10 +93,16 @@ const SUBJECTS_TO_SKIP = ({ course, semester, name }) => {
   return false
 }
 
-const inferCourseFromClassName = (name = '') => (name.toLowerCase().includes('ads') ? 'ADS' : 'CCOMP')
+const roleKeyDelivery = (deliveryNo, subjectId) => `delivery_${deliveryNo}:subject_${subjectId}`
+
+const roleKeyDeliveryStudent = (deliveryNo, subjectId, studentKey) =>
+  `delivery_${deliveryNo}:subject_${subjectId}:student_${studentKey}`
+
+const roleKeyPresentationCriterion = crit => `presentation:${crit}`
+const roleKeyPresentationFinalStudent = studentKey => `presentation:final:student_${studentKey}`
 
 // -------------------------------------------------------------
-// Página
+// Componente
 // -------------------------------------------------------------
 export default function PageAvaliacoes() {
   const [user, setUser] = useState(null)
@@ -97,53 +111,66 @@ export default function PageAvaliacoes() {
   const [loading, setLoading] = useState(true)
 
   const [professorId, setProfessorId] = useState(null)
+
   const [classes, setClasses] = useState([])
   const [classId, setClassId] = useState('')
+
   const [groups, setGroups] = useState([])
   const [subjects, setSubjects] = useState([])
   const [mySubjects, setMySubjects] = useState(new Set())
   const [search, setSearch] = useState('')
+
   const [showAll, setShowAll] = useState(false)
 
-  // minhas avaliações (por avaliador = user.id)
   const [myScores, setMyScores] = useState(new Map())
 
-  // diálogo
   const [dlgOpen, setDlgOpen] = useState(false)
   const [dlgMode, setDlgMode] = useState('delivery') // 'delivery' | 'presentation'
-  const [target, setTarget] = useState(null) // { group, subject, deliveryNo, members }
+  const [target, setTarget] = useState(null)
+
   const [score, setScore] = useState(0)
   const [comment, setComment] = useState('')
   const [commentTouched, setCommentTouched] = useState(false)
+
+  // individuais começam vazios e copyToAll = false
+  const [indiv, setIndiv] = useState([]) // [{student, value (0..10|''), changed}]
   const [copyToAll, setCopyToAll] = useState(false)
-  const [indiv, setIndiv] = useState([]) // [{student:{student_id,full_name,email}, value: ''|0..10, changed}]
+
   const [presentValues, setPresentValues] = useState({})
   const [snack, setSnack] = useState({ open: false, msg: '', sev: 'success' })
 
   const scoreIsValid = Number.isFinite(score) && score >= 0 && score <= 10
   const commentIsValid = norm(comment).length > 0
 
-  // AUTH + perfil
+  const inferCourseFromClassName = (name = '') => {
+    const n = name.toLowerCase()
+
+    if (n.includes('ads')) return 'ADS'
+
+    return 'CCOMP'
+  }
+
+  // ---------------------------------- AUTH ----------------------------------
   useEffect(() => {
     ;(async () => {
       const { data: u } = await supabase.auth.getUser()
       const authUser = u?.user || null
 
       setUser(authUser)
-      setUserEmail(authUser?.email || null)
+      setUserEmail(authUser?.email?.toLowerCase() || null)
 
-      // admin?
       let admin = false
 
       try {
         const { data, error } = await supabase.rpc('is_admin')
 
         if (!error) admin = !!data
-      } catch {}
+      } catch {
+        admin = false
+      }
 
       setIsAdmin(admin)
 
-      // professor id
       let profId = null
 
       if (authUser?.email) {
@@ -158,19 +185,19 @@ export default function PageAvaliacoes() {
 
       setProfessorId(profId)
 
-      // turmas
       setLoading(true)
 
       if (admin) {
         let cls = []
 
         try {
-          const { data } = await supabase
+          const { data: rows, error } = await supabase
             .from('classes')
-            .select('id,name,course,semester')
+            .select('id, name, course, semester')
             .order('name', { ascending: true })
 
-          cls = (data || []).map(r => ({
+          if (error) throw error
+          cls = (rows || []).map(r => ({
             id: r.id,
             name: r.name,
             course: r.course ?? null,
@@ -178,9 +205,9 @@ export default function PageAvaliacoes() {
             semester_int_fallback: null
           }))
         } catch {
-          const { data } = await supabase.from('classes').select('id,name').order('name', { ascending: true })
+          const { data: rows2 } = await supabase.from('classes').select('id, name').order('name', { ascending: true })
 
-          cls = (data || []).map(r => ({
+          cls = (rows2 || []).map(r => ({
             id: r.id,
             name: r.name,
             course: null,
@@ -196,7 +223,7 @@ export default function PageAvaliacoes() {
         else {
           const { data: tcs, error } = await supabase
             .from('teacher_class_semesters')
-            .select('class_id, semester_int, class:classes(id,name,course,semester)')
+            .select('class_id, semester_int, class:classes(id, name, course, semester)')
             .eq('teacher_id', profId)
 
           if (error) setClasses([])
@@ -209,14 +236,18 @@ export default function PageAvaliacoes() {
 
               if (!id) return
               const prev = map.get(id)
-              const sem = Math.min(prev?.semester_int_fallback ?? row.semester_int ?? 99, row.semester_int ?? 99)
+
+              const semester_int_fallback = Math.min(
+                prev?.semester_int_fallback ?? row.semester_int ?? 99,
+                row.semester_int ?? 99
+              )
 
               map.set(id, {
                 id,
                 name: c.name,
                 course: c.course ?? null,
                 semester: c.semester ?? null,
-                semester_int_fallback: Number.isFinite(sem) ? sem : null
+                semester_int_fallback: Number.isFinite(semester_int_fallback) ? semester_int_fallback : null
               })
             })
             const cls = Array.from(map.values()).sort((a, b) => (a.name || '').localeCompare(b.name || ''))
@@ -231,22 +262,21 @@ export default function PageAvaliacoes() {
     })()
   }, [])
 
-  // LOAD por turma
+  // ---------------------------------- LOAD (por turma) ----------------------------------
   useEffect(() => {
     ;(async () => {
       if (!classId || !user) return
       setLoading(true)
 
-      // grupos
       const { data: gs } = await supabase
         .from('pi_groups')
-        .select('id,name,code,semester,github_url,class_id,class:classes(name,course,semester)')
+        .select('id, name, code, semester, github_url, class_id, class:classes(name, course, semester)')
         .eq('class_id', classId)
         .order('name', { ascending: true })
 
       const groupIds = (gs || []).map(g => g.id)
 
-      // membros (pi_group_members | group_members)
+      // membros
       let membersBy = new Map()
 
       if (groupIds.length) {
@@ -266,7 +296,8 @@ export default function PageAvaliacoes() {
 
               if (!by.has(gid)) by.set(gid, [])
               by.get(gid).push({
-                student_id: r.student_user_id || r.student_id || null,
+                student_id: r.student_user_id || r.student_id || null, // pode ser user_id
+                student_user_id: r.student_user_id || null,
                 full_name: r.full_name || null,
                 email: (r.email || '').toLowerCase() || null,
                 github: r.github || null
@@ -282,7 +313,7 @@ export default function PageAvaliacoes() {
 
       setGroups(groupsWithMembers)
 
-      // course/semester dessa turma
+      // disciplinas (catálogo da turma)
       const selectedClass = classes.find(c => String(c.id) === String(classId))
 
       const resolvedCourse =
@@ -293,7 +324,6 @@ export default function PageAvaliacoes() {
       const resolvedSemester =
         selectedClass?.semester ?? gs?.[0]?.class?.semester ?? selectedClass?.semester_int_fallback ?? null
 
-      // subjects do catálogo
       let subj = []
 
       try {
@@ -303,16 +333,34 @@ export default function PageAvaliacoes() {
         if (resolvedSemester != null) query = query.eq('semester', resolvedSemester)
         const { data: sdata } = await query.order('name', { ascending: true })
 
-        subj = (sdata || []).filter(
-          s => !(SUBJECTS_TO_SKIP({ course: s.course, semester: s.semester, name: s.name }) || s.has_delivery === false)
-        )
+        subj = sdata || []
       } catch {
         subj = []
       }
 
-      setSubjects(subj)
+      const filtered = subj.filter(
+        s => !(SUBJECTS_TO_SKIP({ course: s.course, semester: s.semester, name: s.name }) || s.has_delivery === false)
+      )
 
-      // minhas avaliações atuais (grupo + apresentação critérios) – do avaliador logado
+      setSubjects(filtered)
+
+      // disciplinas atribuídas ao professor
+      const mySet = new Set()
+
+      try {
+        if (professorId) {
+          const { data: ts } = await supabase
+            .from('teacher_subjects')
+            .select('subject_id')
+            .eq('teacher_id', professorId)
+
+          ;(ts || []).forEach(r => mySet.add(String(r.subject_id)))
+        }
+      } catch {}
+
+      setMySubjects(mySet)
+
+      // notas já lançadas por mim
       const { data: evs } = await supabase
         .from('evaluations')
         .select('id, group_id, evaluator_id, evaluator_role, score, comment')
@@ -321,17 +369,16 @@ export default function PageAvaliacoes() {
 
       const map = new Map()
 
-      ;(evs || []).forEach(r =>
+      ;(evs || []).forEach(r => {
         map.set(`${r.group_id}:${r.evaluator_role}`, { id: r.id, score: r.score, comment: r.comment })
-      )
+      })
       setMyScores(map)
-
       setLoading(false)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classId, user, professorId, classes])
 
-  // filtro
+  // ---------------------------------- Filtro ----------------------------------
   const filteredGroups = useMemo(() => {
     const q = (search || '').toLowerCase().trim()
 
@@ -357,16 +404,18 @@ export default function PageAvaliacoes() {
         const semesterForFilter =
           g.semester ?? g.class?.semester ?? selectedClass?.semester ?? selectedClass?.semester_int_fallback
 
-        const hasAnyMine = subjects.some(s => s.course === course && Number(s.semester) === Number(semesterForFilter))
+        const hasAnyMine = subjects.some(
+          s => s.course === course && Number(s.semester) === Number(semesterForFilter) && mySubjects.has(String(s.id))
+        )
 
         return hasAnyMine
       })
     }
 
     return base
-  }, [groups, search, isAdmin, showAll, classes, classId, subjects])
+  }, [groups, search, isAdmin, showAll, classes, classId, subjects, mySubjects])
 
-  // helpers de leitura local
+  // ---------------------------------- Cálculos ----------------------------------
   const my = (groupId, roleKey) => myScores.get(`${groupId}:${roleKey}`)?.score ?? null
   const myObj = (groupId, roleKey) => myScores.get(`${groupId}:${roleKey}`) ?? null
 
@@ -377,62 +426,217 @@ export default function PageAvaliacoes() {
     return round2(e1 * W_E1 + e2 * W_E2)
   }
 
-  // RPC helpers
-  const rpcUpsertGroup = async ({ groupId, roleKey, value, text }) =>
-    supabase.rpc('upsert_evaluation', {
-      p_group_id: groupId,
-      p_evaluator_id: user.id,
-      p_evaluator_role: roleKey,
-      p_score: Number(value),
-      p_comment: text || null
-    })
+  const deliveriesSumAllSubjects = gId => {
+    const list = subjects
+      .filter(
+        s => !(SUBJECTS_TO_SKIP({ course: s.course, semester: s.semester, name: s.name }) || s.has_delivery === false)
+      )
+      .filter(s => (isAdmin && showAll) || mySubjects.has(String(s.id)))
+      .map(s => deliveryWeighted(gId, s.id))
 
-  const rpcUpsertIndividual = async ({ groupId, studentId, roleKey, value, text }) =>
-    supabase.rpc('upsert_students_evaluation', {
-      p_group_id: groupId,
-      p_student_id: studentId,
-      p_evaluator_id: user.id,
-      p_role_key: roleKey, // <<< delivery_X:subject_<uuid> (sem :student_)
-      p_score: Number(value),
-      p_comment: text || null
-    })
+    return round2(list.reduce((a, b) => a + b, 0))
+  }
 
-  // abrir diálogo de entrega
-  const openDeliveryDialog = (group, subject, deliveryNo) => {
+  // ---------------------------------- Save (upsert) ----------------------------------
+  const upsertEvaluation = async ({ groupId, roleKey, value, text }) => {
+    const k = `${groupId}:${roleKey}`
+    const existing = myObj(groupId, roleKey)
+    const payload = { score: round2(clamp10(value)), comment: norm(text || '') }
+
+    if (existing?.id) {
+      const { error } = await supabase.from('evaluations').update(payload).eq('id', existing.id)
+
+      if (error) throw error
+      const next = new Map(myScores)
+
+      next.set(k, { ...existing, ...payload })
+      setMyScores(next)
+    } else {
+      const { data, error } = await supabase
+        .from('evaluations')
+        .insert({ group_id: groupId, evaluator_id: user.id, evaluator_role: roleKey, ...payload })
+        .select('id')
+        .single()
+
+      if (error) throw error
+      const next = new Map(myScores)
+
+      next.set(k, { id: data.id, ...payload })
+      setMyScores(next)
+    }
+  }
+
+  // ---------------------------------- Resolver CHAVE do aluno (padrão tela do aluno) ----------------------------------
+  // Prioriza students.user_id; se não houver, usa students.id; resolve por e-mail quando necessário.
+  const resolveStudentKey = async member => {
+    if (member?.student_user_id) return member.student_user_id
+    if (member?.student_id) return member.student_id
+    const email = (member?.email || '').toLowerCase().trim()
+
+    if (!email) return null
+
+    const { data } = await supabase.from('students').select('id, user_id, email').ilike('email', email).maybeSingle()
+
+    return data?.user_id || data?.id || null
+  }
+
+  // ---------------------------------- UI Helpers ----------------------------------
+  const ScoreChip = ({ value }) => {
+    if (value == null) {
+      return <Chip size='small' variant='outlined' icon={<DoNotDisturbIcon fontSize='small' />} label='Sem nota' />
+    }
+
+    const col = value < 6 ? 'error' : value < 8 ? 'warning' : 'success'
+    const icon = col === 'success' ? <StarRoundedIcon fontSize='small' /> : <FiberManualRecordIcon fontSize='small' />
+
+    return (
+      <Chip
+        size='small'
+        color={col}
+        variant={col === 'success' ? 'filled' : 'outlined'}
+        icon={icon}
+        label={formatBR(value)}
+      />
+    )
+  }
+
+  const NumberField = ({ value, onChange, step = 0.1 }) => {
+    const inc = () => onChange(clamp10(round2(Number(value ?? 0) + step)))
+    const dec = () => onChange(clamp10(round2(Number(value ?? 0) - step)))
+
+    const onType = e => {
+      const raw = (e.target.value ?? '').toString().replace(',', '.')
+      const parsed = Number(raw)
+
+      onChange(Number.isNaN(parsed) ? 0 : parsed)
+    }
+
+    return (
+      <TextField
+        fullWidth
+        size='small'
+        type='number'
+        inputMode='decimal'
+        label='Nota (0–10)'
+        helperText='Aceita decimais com vírgula (ex.: 9,5)'
+        value={value}
+        onChange={onType}
+        onBlur={() => onChange(clamp10(round2(Number(value ?? 0))))}
+        InputProps={{
+          startAdornment: (
+            <InputAdornment position='start'>
+              <IconButton size='small' onClick={dec}>
+                <RemoveIcon fontSize='small' />
+              </IconButton>
+            </InputAdornment>
+          ),
+          endAdornment: (
+            <InputAdornment position='end'>
+              <Typography variant='caption' sx={{ mr: 1 }}>
+                /10
+              </Typography>
+              <IconButton size='small' onClick={inc}>
+                <AddIcon fontSize='small' />
+              </IconButton>
+            </InputAdornment>
+          )
+        }}
+        sx={{ maxWidth: 260 }}
+      />
+    )
+  }
+
+  const DecimalFieldBR = ({ value, onChange, label = 'Nota', width = 140 }) => {
+    const handleType = e => {
+      const raw = (e.target.value ?? '').toString().replace(',', '.')
+      const parsed = Number(raw)
+      const val = Number.isNaN(parsed) ? '' : parsed
+
+      onChange(val === '' ? '' : clamp10(round2(val)))
+    }
+
+    const handleBlur = () => {
+      const v = value === '' ? '' : Number(value ?? 0)
+
+      onChange(v === '' ? '' : clamp10(round2(v)))
+    }
+
+    return (
+      <TextField
+        size='small'
+        type='number'
+        inputMode='decimal'
+        label={label}
+        value={value === '' ? '' : String(value)}
+        onChange={handleType}
+        onBlur={handleBlur}
+        placeholder='em branco = usa nota do grupo'
+        InputProps={{ inputProps: { step: 0.1, min: 0, max: 10 } }}
+        sx={{ maxWidth: width }}
+      />
+    )
+  }
+
+  // ---------------------------------- Diálogo ----------------------------------
+  const openDeliveryDialog = async (group, subject, deliveryNo) => {
+    setDlgMode('delivery')
     const prev = myObj(group.id, roleKeyDelivery(deliveryNo, subject.id))
 
-    setDlgMode('delivery')
     setTarget({ group, subject, deliveryNo, members: group.members || [] })
     setScore(prev?.score ?? 0)
     setComment(prev?.comment ?? '')
     setCommentTouched(false)
+
+    // resolve CHAVE (user_id |> students.id)
+    const resolvedMembers = []
+
+    for (const m of group.members || []) {
+      const sk = await resolveStudentKey(m)
+
+      resolvedMembers.push({ ...m, student_key: sk })
+    }
+
+    // iniciam vazios (não grava nada por padrão)
+    setIndiv(resolvedMembers.map(m => ({ student: m, value: '', changed: false })))
     setCopyToAll(false)
-    setIndiv((group.members || []).map(m => ({ student: m, value: '', changed: false })))
     setDlgOpen(true)
   }
 
-  // abrir diálogo apresentação
-  const openPresentationDialog = group => {
+  const openPresentationDialog = async group => {
+    setDlgMode('presentation')
     const initial = {}
 
     PRESENT_CRITERIA.forEach(c => {
       initial[c.key] = my(group.id, roleKeyPresentationCriterion(c.key)) ?? 0
     })
-    setDlgMode('presentation')
-    setTarget({ group, members: group.members || [] })
+
+    const resolvedMembers = []
+
+    for (const m of group.members || []) {
+      const sk = await resolveStudentKey(m)
+
+      resolvedMembers.push({ ...m, student_key: sk })
+    }
+
+    setTarget({ group, members: resolvedMembers })
     setPresentValues(initial)
     setScore(0)
     setComment('')
     setCommentTouched(false)
+    setIndiv(resolvedMembers.map(m => ({ student: m, value: '', changed: false })))
     setCopyToAll(false)
-    setIndiv((group.members || []).map(m => ({ student: m, value: '', changed: false })))
     setDlgOpen(true)
   }
 
-  // salvar
   const handleSaveDialog = async () => {
     try {
       if (!user || !target?.group) return
+
+      if (!isAdmin && mySubjects.size === 0) {
+        setSnack({ open: true, msg: 'Sem permissão para lançar notas nesta turma.', sev: 'warning' })
+
+        return
+      }
 
       if (!commentIsValid) {
         setCommentTouched(true)
@@ -444,31 +648,39 @@ export default function PageAvaliacoes() {
       if (dlgMode === 'delivery') {
         const { group, subject, deliveryNo } = target
 
+        if (!(isAdmin && showAll) && !mySubjects.has(String(subject.id))) {
+          setSnack({ open: true, msg: 'Você não possui essa disciplina atribuída.', sev: 'warning' })
+
+          return
+        }
+
         if (!scoreIsValid) {
           setSnack({ open: true, msg: 'Nota inválida (0–10).', sev: 'warning' })
 
           return
         }
 
-        // 1) grupo
-        const rk = roleKeyDelivery(deliveryNo, subject.id)
-        const { error: e1 } = await rpcUpsertGroup({ groupId: group.id, roleKey: rk, value: score, text: comment })
+        // 1) Grupo
+        await upsertEvaluation({
+          groupId: group.id,
+          roleKey: roleKeyDelivery(deliveryNo, subject.id),
+          value: score,
+          text: comment
+        })
 
-        if (e1) throw e1
-
-        // 2) individuais
+        // 2) Individuais
         const toSave = []
 
         if (copyToAll) {
           for (const it of indiv) {
-            const sid = it.student?.student_id
+            const sid = it.student?.student_key
 
             if (!sid) continue
             toSave.push({ sid, val: score })
           }
         } else {
           for (const it of indiv) {
-            const sid = it.student?.student_id
+            const sid = it.student?.student_key
 
             if (!sid) continue
 
@@ -479,56 +691,39 @@ export default function PageAvaliacoes() {
         }
 
         for (const item of toSave) {
-          const { error: e2 } = await rpcUpsertIndividual({
+          await upsertEvaluation({
             groupId: group.id,
-            studentId: item.sid,
-            roleKey: rk, // <<< mesma chave da entrega
+            roleKey: roleKeyDeliveryStudent(deliveryNo, subject.id, item.sid),
             value: item.val,
             text: `(individual) ${comment}`
           })
-
-          if (e2) throw e2
         }
-
-        // cache local do avaliador (apenas grupo)
-        const k = `${group.id}:${rk}`
-        const next = new Map(myScores)
-        const existing = next.get(k)
-
-        next.set(k, { ...(existing || {}), score: round2(score), comment })
-        setMyScores(next)
 
         setSnack({ open: true, msg: 'Entrega salva!', sev: 'success' })
       } else {
         const { group } = target
 
-        // critérios do grupo
+        // Grupo - critérios apresentação
         for (const c of PRESENT_CRITERIA) {
-          const rk = roleKeyPresentationCriterion(c.key)
+          const key = roleKeyPresentationCriterion(c.key)
+          const val = Number(presentValues[c.key] ?? 0)
 
-          const { error } = await rpcUpsertGroup({
-            groupId: group.id,
-            roleKey: rk,
-            value: Number(presentValues[c.key] ?? 0),
-            text: comment
-          })
-
-          if (error) throw error
+          await upsertEvaluation({ groupId: group.id, roleKey: key, value: val, text: comment })
         }
 
-        // finais individuais
+        // Individuais (apresentação)
         const toSave = []
 
         if (copyToAll) {
           for (const it of indiv) {
-            const sid = it.student?.student_id
+            const sid = it.student?.student_key
 
             if (!sid) continue
             toSave.push({ sid, val: Number(score || 0) })
           }
         } else {
           for (const it of indiv) {
-            const sid = it.student?.student_id
+            const sid = it.student?.student_key
 
             if (!sid) continue
 
@@ -539,15 +734,12 @@ export default function PageAvaliacoes() {
         }
 
         for (const item of toSave) {
-          const { error } = await rpcUpsertIndividual({
+          await upsertEvaluation({
             groupId: group.id,
-            studentId: item.sid,
             roleKey: roleKeyPresentationFinalStudent(item.sid),
             value: item.val,
             text: `(individual apresentação) ${comment}`
           })
-
-          if (error) throw error
         }
 
         setSnack({ open: true, msg: 'Apresentação salva!', sev: 'success' })
@@ -560,56 +752,11 @@ export default function PageAvaliacoes() {
     }
   }
 
-  // UI auxiliar
-  const NumberField = ({ value, onChange, step = 0.1 }) => (
-    <TextField
-      fullWidth
-      size='small'
-      type='number'
-      inputMode='decimal'
-      label='Nota (0–10)'
-      helperText='Decimais com vírgula (ex.: 9,5)'
-      value={value}
-      onChange={e => {
-        const parsed = Number((e.target.value ?? '').toString().replace(',', '.'))
-
-        onChange(Number.isNaN(parsed) ? 0 : parsed)
-      }}
-      onBlur={() => onChange(clamp10(round2(Number(value ?? 0))))}
-      InputProps={{ inputProps: { step: 0.1, min: 0, max: 10 } }}
-      sx={{ maxWidth: 240 }}
-    />
-  )
-
-  const DecimalFieldBR = ({ value, onChange, label = 'Nota', width = 140 }) => (
-    <TextField
-      size='small'
-      type='number'
-      inputMode='decimal'
-      label={label}
-      value={value === '' ? '' : String(value)}
-      onChange={e => {
-        const raw = (e.target.value ?? '').toString().replace(',', '.')
-        const parsed = Number(raw)
-
-        onChange(Number.isNaN(parsed) ? '' : clamp10(round2(parsed)))
-      }}
-      onBlur={() => {
-        if (value === '') return
-        const v = Number(value ?? 0)
-
-        onChange(clamp10(round2(v)))
-      }}
-      placeholder='em branco = não grava'
-      InputProps={{ inputProps: { step: 0.1, min: 0, max: 10 } }}
-      sx={{ maxWidth: width }}
-    />
-  )
-
+  // ---------------------------------- Card de Disciplina ----------------------------------
   const SubjectCard = ({ group, subject }) => {
     const e1 = my(group.id, roleKeyDelivery(1, subject.id))
     const e2 = my(group.id, roleKeyDelivery(2, subject.id))
-    const sum = round2((e1 || 0) * W_E1 + (e2 || 0) * W_E2)
+    const sum = deliveryWeighted(group.id, subject.id)
 
     return (
       <Card variant='outlined'>
@@ -626,10 +773,13 @@ export default function PageAvaliacoes() {
         <CardContent>
           <Grid container spacing={2}>
             <Grid item xs={12} md={4}>
-              <Stack spacing={1}>
+              <Stack
+                spacing={1}
+                sx={{ p: 1.25, border: theme => `1px solid ${theme.palette.divider}`, borderRadius: 2 }}
+              >
                 <Typography variant='subtitle2'>1ª Entrega</Typography>
                 <Stack direction='row' spacing={1} alignItems='center'>
-                  <Chip size='small' color={e1 == null ? 'default' : 'primary'} label={formatBR(e1) || 'Sem nota'} />
+                  <ScoreChip value={e1} />
                   <Button variant='contained' size='small' onClick={() => openDeliveryDialog(group, subject, 1)}>
                     Avaliar
                   </Button>
@@ -637,10 +787,13 @@ export default function PageAvaliacoes() {
               </Stack>
             </Grid>
             <Grid item xs={12} md={4}>
-              <Stack spacing={1}>
+              <Stack
+                spacing={1}
+                sx={{ p: 1.25, border: theme => `1px solid ${theme.palette.divider}`, borderRadius: 2 }}
+              >
                 <Typography variant='subtitle2'>2ª Entrega</Typography>
                 <Stack direction='row' spacing={1} alignItems='center'>
-                  <Chip size='small' color={e2 == null ? 'default' : 'primary'} label={formatBR(e2) || 'Sem nota'} />
+                  <ScoreChip value={e2} />
                   <Button variant='contained' size='small' onClick={() => openDeliveryDialog(group, subject, 2)}>
                     Avaliar
                   </Button>
@@ -648,7 +801,10 @@ export default function PageAvaliacoes() {
               </Stack>
             </Grid>
             <Grid item xs={12} md={4}>
-              <Stack spacing={1}>
+              <Stack
+                spacing={1}
+                sx={{ p: 1.25, border: theme => `1px solid ${theme.palette.divider}`, borderRadius: 2 }}
+              >
                 <Typography variant='subtitle2'>Soma (E1+E2)</Typography>
                 <Chip size='small' color='primary' label={formatBR(sum)} />
               </Stack>
@@ -659,6 +815,7 @@ export default function PageAvaliacoes() {
     )
   }
 
+  // ---------------------------------- Corpo ----------------------------------
   const body = loading ? (
     <Grid container spacing={3}>
       {[...Array(3)].map((_, i) => (
@@ -714,6 +871,20 @@ export default function PageAvaliacoes() {
                       icon={<GroupIcon fontSize='small' />}
                       label={`${g.members?.length || 0} integrante(s)`}
                     />
+                    {g.github_url ? (
+                      <div style={{ marginTop: 8 }}>
+                        <a
+                          href={g.github_url}
+                          onClick={e => e.stopPropagation()}
+                          target='_blank'
+                          rel='noopener noreferrer'
+                        >
+                          <Button size='small' variant='outlined' startIcon={<i className='ri-github-line' />}>
+                            GitHub do grupo
+                          </Button>
+                        </a>
+                      </div>
+                    ) : null}
                     <Box sx={{ flexGrow: 1 }} />
                     {course?.toUpperCase() === 'ADS' && (
                       <Tooltip title='Abrir Documentação ADS'>
@@ -764,24 +935,25 @@ export default function PageAvaliacoes() {
               />
               <CardContent>
                 <Grid container spacing={2}>
-                  {subjectsThisClass.map(s => (
-                    <Grid key={s.id} item xs={12}>
-                      <SubjectCard group={g} subject={s} />
+                  {subjectsThisClass
+                    .filter(s => (isAdmin && showAll) || mySubjects.has(String(s.id)))
+                    .map(s => (
+                      <Grid key={s.id} item xs={12}>
+                        <SubjectCard group={g} subject={s} />
+                      </Grid>
+                    ))}
+                  {subjectsThisClass.filter(s => (isAdmin && showAll) || mySubjects.has(String(s.id))).length === 0 && (
+                    <Grid item xs={12}>
+                      <Alert severity='info'>Nenhuma disciplina atribuída para você nesta turma.</Alert>
                     </Grid>
-                  ))}
+                  )}
                   <Grid item xs={12}>
                     <Divider sx={{ my: 1 }} />
                     <Stack direction='row' spacing={1} alignItems='center' flexWrap='wrap'>
                       <Typography variant='subtitle1' fontWeight={800}>
-                        Nota Final das Entregas (somente suas notas)
+                        Nota Final das Entregas (somente disciplinas visíveis)
                       </Typography>
-                      <Chip
-                        size='small'
-                        color='primary'
-                        label={formatBR(
-                          subjectsThisClass.map(s => deliveryWeighted(g.id, s.id)).reduce((a, b) => a + b, 0)
-                        )}
-                      />
+                      <Chip size='small' color='primary' label={formatBR(deliveriesSumAllSubjects(g.id))} />
                     </Stack>
                   </Grid>
                 </Grid>
@@ -793,6 +965,7 @@ export default function PageAvaliacoes() {
     </Grid>
   )
 
+  // ---------------------------------- Guard ----------------------------------
   if (!isAdmin && mySubjects.size === 0) {
     return (
       <Card>
@@ -807,6 +980,7 @@ export default function PageAvaliacoes() {
     )
   }
 
+  // ---------------------------------- Render ----------------------------------
   return (
     <Box sx={{ pb: 4 }}>
       <Stack
@@ -829,8 +1003,7 @@ export default function PageAvaliacoes() {
               <InputAdornment position='start'>
                 <SearchIcon fontSize='small' />
               </InputAdornment>
-            ),
-            'aria-label': 'Buscar grupos'
+            )
           }}
         />
         <Box sx={{ flexGrow: 1 }} />
@@ -906,7 +1079,7 @@ export default function PageAvaliacoes() {
               <Stack direction='row' alignItems='center' spacing={1}>
                 <Checkbox checked={copyToAll} onChange={(_, v) => setCopyToAll(v)} />
                 <Typography variant='body2'>
-                  Copiar a nota do <b>grupo</b> para todos (grava como <i>individual</i>).
+                  Copiar a nota do <b>grupo</b> para todos os integrantes (grava como <i>individual</i>).
                 </Typography>
               </Stack>
 
@@ -922,7 +1095,7 @@ export default function PageAvaliacoes() {
                     const it = indiv[idx] || { value: '' }
 
                     return (
-                      <TableRow key={m.student_id || m.email || m.full_name || idx}>
+                      <TableRow key={m.student_key || m.student_id || m.email || m.full_name || idx}>
                         <TableCell>
                           <Typography variant='body2' fontWeight={600}>
                             {m.full_name || m.email || '(sem nome)'}
@@ -964,24 +1137,20 @@ export default function PageAvaliacoes() {
           ) : (
             <Stack spacing={2}>
               <Alert severity='info'>Lançando notas dos critérios de apresentação para o grupo.</Alert>
+
               {PRESENT_CRITERIA.map(c => (
                 <Box key={c.key} sx={{ px: 1 }}>
                   <Typography variant='subtitle2' sx={{ mb: 0.5 }}>
                     {c.label}
                   </Typography>
-                  <TextField
-                    size='small'
-                    type='number'
-                    inputMode='decimal'
-                    value={presentValues[c.key] ?? 0}
-                    onChange={e =>
-                      setPresentValues(s => ({
-                        ...s,
-                        [c.key]: clamp10(round2(Number((e.target.value || '').toString().replace(',', '.'))))
-                      }))
-                    }
-                    InputProps={{ inputProps: { step: 1, min: 0, max: 10 } }}
-                    sx={{ maxWidth: 140 }}
+                  <Slider
+                    value={Number(presentValues[c.key] ?? 0)}
+                    onChange={(_, v) => setPresentValues(s => ({ ...s, [c.key]: clamp10(v) }))}
+                    valueLabelDisplay='auto'
+                    step={1}
+                    marks={marks}
+                    min={0}
+                    max={10}
                   />
                 </Box>
               ))}
@@ -1018,7 +1187,7 @@ export default function PageAvaliacoes() {
                     const it = indiv[idx] || { value: '' }
 
                     return (
-                      <TableRow key={m.student_id || m.email || m.full_name || idx}>
+                      <TableRow key={m.student_key || m.student_id || m.email || m.full_name || idx}>
                         <TableCell>
                           <Typography variant='body2' fontWeight={600}>
                             {m.full_name || m.email || '(sem nome)'}
@@ -1029,12 +1198,12 @@ export default function PageAvaliacoes() {
                         </TableCell>
                         <TableCell>
                           <DecimalFieldBR
-                            value={copyToAll ? Number(score) : it.value}
+                            value={copyToAll ? Number(score) : it.value === '' ? '' : Number(it.value)}
                             onChange={v => {
                               setIndiv(prev => {
                                 const next = [...prev]
 
-                                next[idx] = { student: m, value: v, changed: true }
+                                next[idx] = { student: m, value: clamp10(v), changed: true }
 
                                 return next
                               })
