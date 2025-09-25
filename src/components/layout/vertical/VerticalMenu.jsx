@@ -6,8 +6,6 @@ import { useEffect, useState } from 'react'
 import Chip from '@mui/material/Chip'
 import { useTheme } from '@mui/material/styles'
 
-// React / Hooks
-
 // Third-party Imports
 import PerfectScrollbar from 'react-perfect-scrollbar'
 
@@ -39,8 +37,9 @@ const VerticalMenu = ({ scrollMenu }) => {
   const { isBreakpointReached, transitionDuration } = useVerticalNav()
   const ScrollWrapper = isBreakpointReached ? 'div' : PerfectScrollbar
 
-  // Papel do usuário (student / professor / null)
+  // Papel do usuário (student / professor / admin / null)
   const [role, setRole] = useState(null)
+  const isStudent = role === 'student'
 
   useEffect(() => {
     let alive = true
@@ -62,11 +61,7 @@ const VerticalMenu = ({ scrollMenu }) => {
     }
   }, [])
 
-  const isStudent = role === 'student'
-
   return (
-    // eslint-disable-next-line lines-around-comment
-    /* Custom scrollbar instead of browser scroll, remove if you want browser scroll only */
     <ScrollWrapper
       {...(isBreakpointReached
         ? {
@@ -78,8 +73,6 @@ const VerticalMenu = ({ scrollMenu }) => {
             onScrollY: container => scrollMenu(container, true)
           })}
     >
-      {/* Incase you also want to scroll NavHeader to scroll with Vertical Menu, remove NavHeader from above and paste it below this comment */}
-      {/* Vertical Menu */}
       <Menu
         menuItemStyles={menuItemStyles(theme)}
         renderExpandIcon={({ open }) => <RenderExpandIcon open={open} transitionDuration={transitionDuration} />}
@@ -95,7 +88,7 @@ const VerticalMenu = ({ scrollMenu }) => {
           </SubMenu>
         )}
 
-        {/* APPS & PÁGINAS (internas do GameFy) — apenas professor/admin */}
+        {/* APPS & PÁGINAS — apenas professor/admin */}
         {!isStudent && (
           <MenuSection label='Apps & Páginas'>
             <MenuItem href='/eventos' icon={<i className='ri-calendar-event-line' />}>
@@ -113,11 +106,9 @@ const VerticalMenu = ({ scrollMenu }) => {
             <MenuItem href='/kanban' icon={<i className='ri-drag-drop-line' />}>
               Kanban
             </MenuItem>
-
             <MenuItem href='/account-settings' icon={<i className='ri-user-settings-line' />}>
               Configurações da Conta
             </MenuItem>
-
             <SubMenu label='Autenticação' icon={<i className='ri-shield-keyhole-line' />}>
               <MenuItem href='/login' target='_blank'>
                 Login
@@ -132,7 +123,7 @@ const VerticalMenu = ({ scrollMenu }) => {
           </MenuSection>
         )}
 
-        {/* FORMULÁRIOS & TABELAS — apenas professor/admin */}
+        {/* FORMULÁRIOS — apenas professor/admin */}
         {!isStudent && (
           <MenuSection label='Formulários'>
             <MenuItem href='/forms/new' icon={<i className='ri-add-box-line' />}>
@@ -169,7 +160,7 @@ const VerticalMenu = ({ scrollMenu }) => {
           </MenuSection>
         )}
 
-        {/* Alunos — sempre mostra "Notas dos PIs"; "Pré-cadastro" só para professor/admin */}
+        {/* Alunos — alunos veem apenas "Notas dos PIs"; pré-cadastro é do professor */}
         <MenuSection label='Alunos'>
           <MenuItem href='/alunos/notas' icon={<i className='ri-file-list-3-line' />}>
             Notas dos PIs

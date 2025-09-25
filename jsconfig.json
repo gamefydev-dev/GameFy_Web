@@ -50,7 +50,7 @@
     "tailwind.config.js",
     "**/*.js",
     "**/*.jsx"
-  ],
+, "src/app/(dashboard)/blocked_page/page.tsx"  ],
   "exclude": [
     "node_modules"
   ]
