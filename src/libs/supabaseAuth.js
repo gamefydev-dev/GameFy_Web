@@ -90,7 +90,10 @@ export async function signUp({ email, password, metadata = {}, redirectPath = '/
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: metadata, emailRedirectTo: getRedirectURL(redirectPath) }
+    options: {
+      data: metadata, // <-- garante que role/name/etc vão para raw_user_meta_data
+      emailRedirectTo: getRedirectURL(redirectPath)
+    }
   })
 
   return { data, error }
@@ -133,8 +136,35 @@ export async function signUpStudent({ email, password, metadata = {} }) {
       class_code: metadata?.class_code ?? null
     }
 
-    // upsert evita erro de PK duplicada quando já existe a linha
     const { error: err2 } = await supabase.from('students').upsert(insert, { onConflict: 'id' }).select().single()
+
+    if (err2) return { data, error: err2 }
+  }
+
+  return { data, error: null }
+}
+
+export async function signUpProfessor({ email, password, metadata = {} }) {
+  // 1) cria conta com role=professor no Auth
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: { data: { ...metadata, role: 'professor' } }
+  })
+
+  if (error) return { data, error }
+
+  // 2) insere/atualiza em public.professors (idempotente)
+  const userId = data?.user?.id
+
+  if (userId) {
+    const insert = {
+      user_id: userId, // padronize sua tabela para usar user_id (PK/FK p/ auth.users)
+      email,
+      name: metadata?.name ?? metadata?.username ?? email
+    }
+
+    const { error: err2 } = await supabase.from('professors').upsert(insert, { onConflict: 'user_id' })
 
     if (err2) return { data, error: err2 }
   }
@@ -149,11 +179,13 @@ export async function fetchCurrentProfile() {
 
   if (!user) return { role: null, profile: null }
 
+  // students: PK = id
   const { data: s } = await supabase.from('students').select('*').eq('id', user.id).maybeSingle()
 
   if (s) return { role: 'student', profile: s }
 
-  const { data: p } = await supabase.from('professors').select('*').eq('id', user.id).maybeSingle()
+  // professors: PK = user_id (padronizado)
+  const { data: p } = await supabase.from('professors').select('*').eq('user_id', user.id).maybeSingle()
 
   if (p) return { role: 'professor', profile: p }
 

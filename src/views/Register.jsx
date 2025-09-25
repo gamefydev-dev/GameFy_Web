@@ -96,8 +96,20 @@ const Register = ({ mode }) => {
       const { data, error } = await signUp({
         email,
         password,
-        metadata: { username, name, role: 'professor' }
+        metadata: { username, name, role: 'professor' } // <- isso precisa virar options.data no helper
       })
+
+      if (error) throw error
+
+      const userId = data?.user?.id
+
+      if (userId) {
+        await fetch('/api/create-professor-profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId, name, email })
+        })
+      }
 
       if (error) throw error
 
