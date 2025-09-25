@@ -1,18 +1,20 @@
+// src/app/api/precadastro-professores/route.js
+export const runtime = 'nodejs' // garante Node, necessário pro nodemailer
+
 import { NextResponse } from 'next/server'
 
 import nodemailer from 'nodemailer'
 import { createClient } from '@supabase/supabase-js'
 
-// igual à sua rota existente, mas com defaults para "professor" e um pequeno "role" no log
-// base: src/app/api/send-precadastro/route.js :contentReference[oaicite:3]{index=3}
-
+// Supabase (server-side key)
 const supabaseAdmin = (() => {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-  if (!url || !key) return null
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-  return createClient(url, key, { auth: { persistSession: false } })
+  if (!url || !serviceKey) return null
+
+  return createClient(url, serviceKey, { auth: { persistSession: false } })
 })()
 
 export async function POST(req) {
@@ -37,6 +39,7 @@ export async function POST(req) {
     })
 
     const list = Array.isArray(recipients) ? recipients : []
+
     const targetList = testMode && testEmail ? [{ name: 'Teste', email: testEmail, role: 'professor' }] : list
 
     const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -46,8 +49,8 @@ export async function POST(req) {
     const report = []
 
     for (const r of targetList) {
-      const name = r?.name ? r.name : 'Professor'
-      const email = r?.email || null
+      const name = r?.name ? String(r.name) : 'Professor'
+      const email = r?.email ? String(r.email).trim() : null
 
       if (!email) {
         failed += 1

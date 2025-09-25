@@ -19,14 +19,17 @@ import {
   TableRow,
   TableCell,
   TableBody,
+  TableContainer,
   Checkbox,
   Button,
   Snackbar,
   Alert,
   Tooltip,
   Typography,
-  MenuItem
+  Paper,
+  useMediaQuery
 } from '@mui/material'
+import { useTheme } from '@mui/material/styles'
 import SearchIcon from '@mui/icons-material/Search'
 import SendIcon from '@mui/icons-material/Send'
 import RestartAltIcon from '@mui/icons-material/RestartAlt'
@@ -35,7 +38,7 @@ import UploadFileIcon from '@mui/icons-material/UploadFile'
 import AddIcon from '@mui/icons-material/Add'
 
 // ----------------- Helpers -----------------
-const emailRe = /(?:^|\s|<|\()([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:$|\s|>|\))/ // simples e eficaz
+const emailRe = /(?:^|\s|<|\()([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:$|\s|>|\))/
 
 function dedupeByEmail(rows) {
   const seen = new Set()
@@ -56,15 +59,13 @@ function normalizeRecord(r) {
   return {
     id: crypto.randomUUID(),
     full_name: (r.full_name || r.name || '').trim(),
-    email: (r.email || '').trim()
+    email: (r.email || '').trim(),
+    area: r.area || '',
+    dept: r.dept || ''
   }
 }
 
 function parsePastedList(text) {
-  // aceita linhas no formato:
-  // 1) Nome <email@dominio>
-  // 2) email@dominio, Nome
-  // 3) email@dominio
   const rows = []
 
   for (const rawLine of (text || '').split(/\r?\n/)) {
@@ -72,7 +73,6 @@ function parsePastedList(text) {
 
     if (!line) continue
 
-    // tenta extrair e-mail
     const m = line.match(emailRe)
     const email = m ? m[1] : null
 
@@ -81,19 +81,12 @@ function parsePastedList(text) {
     let name = ''
 
     if (line.includes('<') && line.includes('>')) {
-      // Nome <email>
       name = line.replace(/<.*?>/g, '').trim()
     } else if (line.includes(',')) {
-      // email, Nome  OU  Nome, email
       const [a, b] = line.split(',').map(s => s.trim())
 
-      if (a.includes('@')) {
-        name = b || ''
-      } else if (b?.includes('@')) {
-        name = a || ''
-      }
-    } else if (!line.includes('@')) {
-      // linha sem @ não entra
+      if (a.includes('@')) name = b || ''
+      else if (b?.includes('@')) name = a || ''
     }
 
     rows.push(normalizeRecord({ full_name: name, email }))
@@ -103,8 +96,7 @@ function parsePastedList(text) {
 }
 
 function parseCSV(text) {
-  // aceitamos cabeçalhos flexíveis: email, full_name|name
-  // separador: vírgula ; ou ;  (auto)
+  // aceita vírgula ou ponto-e-vírgula
   const sep = text.includes(';') && !text.includes(',') ? ';' : ','
   const lines = text.split(/\r?\n/)
 
@@ -116,8 +108,10 @@ function parseCSV(text) {
     .map(h => h.trim().toLowerCase())
 
   const idx = {
-    email: header.findIndex(h => h === 'email'),
-    name: header.findIndex(h => h === 'name' || h === 'full_name' || h === 'full name' || h === 'nome')
+    email: header.findIndex(h => h === 'email' || h === 'e-mail'),
+    name: header.findIndex(h => ['name', 'full_name', 'full name', 'nome'].includes(h)),
+    area: header.findIndex(h => ['area', 'área'].includes(h)),
+    dept: header.findIndex(h => ['depto', 'departamento', 'dept'].includes(h))
   }
 
   const rows = []
@@ -128,7 +122,9 @@ function parseCSV(text) {
 
     const rec = normalizeRecord({
       email: idx.email >= 0 ? cols[idx.email] : '',
-      full_name: idx.name >= 0 ? cols[idx.name] : ''
+      full_name: idx.name >= 0 ? cols[idx.name] : '',
+      area: idx.area >= 0 ? cols[idx.area] : '',
+      dept: idx.dept >= 0 ? cols[idx.dept] : ''
     })
 
     if (rec.email) rows.push(rec)
@@ -139,8 +135,13 @@ function parseCSV(text) {
 
 // ----------------- Página -----------------
 export default function PreCadastroProfessoresPage() {
+  const theme = useTheme()
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
+  const isTablet = useMediaQuery(theme.breakpoints.down('md'))
+  const fieldSize = isTablet ? 'small' : 'medium'
+
   // fonte única de verdade: lista em memória
-  const [professores, setProfessores] = useState([]) // {id, full_name, email)
+  const [professores, setProfessores] = useState([]) // {id, full_name, email, area?, dept?}
   const [selected, setSelected] = useState([])
   const [search, setSearch] = useState('')
 
@@ -166,7 +167,12 @@ export default function PreCadastroProfessoresPage() {
     const q = (search || '').trim().toLowerCase()
 
     return professores.filter(p => {
-      const byText = !q || (p.full_name || '').toLowerCase().includes(q) || (p.email || '').toLowerCase().includes(q)
+      const byText =
+        !q ||
+        (p.full_name || '').toLowerCase().includes(q) ||
+        (p.email || '').toLowerCase().includes(q) ||
+        (p.area || '').toLowerCase().includes(q) ||
+        (p.dept || '').toLowerCase().includes(q)
 
       return byText
     })
@@ -274,17 +280,28 @@ export default function PreCadastroProfessoresPage() {
         linkCadastro
       }
 
+      // 🔧 Rota certa + blindagem de resposta
       const res = await fetch('/api/send-precadastro-professores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
 
-      const json = await res.json()
+      const ct = res.headers.get('content-type') || ''
+      let data
 
-      if (!res.ok) throw new Error(json?.error || 'Falha ao enviar e-mails')
-      setSnack({ open: true, msg: `Enviado: ${json.sent} | Falhas: ${json.failed}`, sev: 'success' })
-      setReport(json.report || '')
+      if (ct.includes('application/json')) {
+        data = await res.json()
+      } else {
+        const text = await res.text()
+
+        throw new Error(text?.slice(0, 300) || 'A API retornou uma resposta não-JSON')
+      }
+
+      if (!res.ok) throw new Error(data?.error || 'Falha ao enviar e-mails')
+
+      setSnack({ open: true, msg: `Enviado: ${data.sent} | Falhas: ${data.failed}`, sev: 'success' })
+      setReport(data.report || '')
     } catch (err) {
       setSnack({ open: true, msg: err?.message || 'Erro no envio', sev: 'error' })
     } finally {
@@ -296,6 +313,7 @@ export default function PreCadastroProfessoresPage() {
   const [newName, setNewName] = useState('')
   const [newEmail, setNewEmail] = useState('')
 
+  // ---------- Render ----------
   return (
     <Grid container spacing={4}>
       <Grid item xs={12}>
@@ -313,16 +331,24 @@ export default function PreCadastroProfessoresPage() {
                   value={fromName}
                   onChange={e => setFromName(e.target.value)}
                   fullWidth
+                  size={fieldSize}
                 />
                 <TextField
                   label='Remetente (E-mail)'
                   value={fromEmail}
                   onChange={e => setFromEmail(e.target.value)}
                   fullWidth
+                  size={fieldSize}
                 />
               </Stack>
 
-              <TextField label='Assunto' value={subject} onChange={e => setSubject(e.target.value)} fullWidth />
+              <TextField
+                label='Assunto'
+                value={subject}
+                onChange={e => setSubject(e.target.value)}
+                fullWidth
+                size={fieldSize}
+              />
 
               {/* link + busca */}
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
@@ -331,6 +357,7 @@ export default function PreCadastroProfessoresPage() {
                   value={linkCadastro}
                   onChange={e => setLinkCadastro(e.target.value)}
                   fullWidth
+                  size={fieldSize}
                 />
                 <TextField
                   label='Pesquisar (nome, e-mail, área, depto)'
@@ -344,6 +371,7 @@ export default function PreCadastroProfessoresPage() {
                     )
                   }}
                   fullWidth
+                  size={fieldSize}
                 />
               </Stack>
 
@@ -354,8 +382,9 @@ export default function PreCadastroProfessoresPage() {
                 onChange={e => setPreview(e.target.value)}
                 helperText='Use {{name}} e {{link}} como variáveis'
                 multiline
-                minRows={6}
+                minRows={isMobile ? 4 : 6}
                 fullWidth
+                size={fieldSize}
               />
 
               {/* Importação e adição manual */}
@@ -364,15 +393,26 @@ export default function PreCadastroProfessoresPage() {
                 <CardContent>
                   <Stack spacing={2}>
                     <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-                      <TextField label='Nome' value={newName} onChange={e => setNewName(e.target.value)} fullWidth />
+                      <TextField
+                        label='Nome'
+                        value={newName}
+                        onChange={e => setNewName(e.target.value)}
+                        fullWidth
+                        size={fieldSize}
+                      />
                       <TextField
                         label='E-mail'
                         value={newEmail}
                         onChange={e => setNewEmail(e.target.value)}
                         fullWidth
+                        size={fieldSize}
                       />
                     </Stack>
-                    <Stack direction='row' spacing={2} alignItems='center'>
+                    <Stack
+                      direction={{ xs: 'column', sm: 'row' }}
+                      spacing={2}
+                      alignItems={{ xs: 'stretch', sm: 'center' }}
+                    >
                       <Button
                         variant='contained'
                         startIcon={<AddIcon />}
@@ -381,11 +421,12 @@ export default function PreCadastroProfessoresPage() {
                           setNewName('')
                           setNewEmail('')
                         }}
+                        fullWidth={isMobile}
                       >
                         Adicionar
                       </Button>
 
-                      <Box flexGrow={1} />
+                      <Box flexGrow={1} display={{ xs: 'none', sm: 'block' }} />
 
                       <input
                         id='csv-input'
@@ -394,14 +435,14 @@ export default function PreCadastroProfessoresPage() {
                         style={{ display: 'none' }}
                         onChange={e => handleCSV(e.target.files?.[0])}
                       />
-                      <label htmlFor='csv-input'>
-                        <Button variant='outlined' startIcon={<UploadFileIcon />} component='span'>
+                      <label htmlFor='csv-input' style={{ width: isMobile ? '100%' : 'auto' }}>
+                        <Button variant='outlined' startIcon={<UploadFileIcon />} component='span' fullWidth={isMobile}>
                           Importar CSV
                         </Button>
                       </label>
 
                       <Tooltip title='Ler nomes/emails da sua área de transferência'>
-                        <Button variant='outlined' onClick={handlePaste}>
+                        <Button variant='outlined' onClick={handlePaste} fullWidth={isMobile}>
                           Colar da área de transferência
                         </Button>
                       </Tooltip>
@@ -411,80 +452,128 @@ export default function PreCadastroProfessoresPage() {
               </Card>
 
               {/* contadores */}
-              <Box>
-                <Chip label={`Carregados: ${professores.length}`} sx={{ mr: 1 }} />
+              <Box display='flex' flexWrap='wrap' gap={1}>
+                <Chip label={`Carregados: ${professores.length}`} />
                 <Chip color='primary' label={`Selecionados: ${selected.length}`} />
               </Box>
 
               <Divider />
 
-              {/* tabela */}
-              <Box sx={{ overflowX: 'auto' }}>
-                <Table size='small'>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell width={48}>
+              {/* lista/tabela */}
+              {isMobile ? (
+                // ----- MOBILE: lista de cards -----
+                <Stack spacing={1}>
+                  {filtered.map(r => (
+                    <Card key={r.id} variant='outlined' sx={{ p: 1 }}>
+                      <Stack direction='row' alignItems='center' spacing={1}>
                         <Checkbox
-                          checked={selected.length > 0 && selected.length === filtered.length}
-                          indeterminate={selected.length > 0 && selected.length < filtered.length}
-                          onChange={e => toggleAll(e.target.checked)}
+                          checked={selected.includes(r.id)}
+                          onChange={e => toggleOne(r.id, e.target.checked)}
+                          sx={{ p: 0.5 }}
                         />
-                      </TableCell>
-                      <TableCell>Nome</TableCell>
-                      <TableCell>E-mail</TableCell>
-                      <TableCell>Área</TableCell>
-                      <TableCell>Departamento</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {filtered.map(r => (
-                      <TableRow key={r.id} hover>
-                        <TableCell>
+                        <Box>
+                          <Typography fontWeight={600} variant='body1'>
+                            {r.full_name || '—'}
+                          </Typography>
+                          <Typography variant='body2' sx={{ wordBreak: 'break-all' }}>
+                            {r.email}
+                          </Typography>
+                          {(r.area || r.dept) && (
+                            <Typography variant='caption' color='text.secondary'>
+                              {[r.area, r.dept].filter(Boolean).join(' · ')}
+                            </Typography>
+                          )}
+                        </Box>
+                      </Stack>
+                    </Card>
+                  ))}
+                </Stack>
+              ) : (
+                // ----- DESKTOP/TABLET: tabela com scroll -----
+                <TableContainer component={Paper} variant='outlined' sx={{ maxHeight: 560 }}>
+                  <Table size='small' stickyHeader aria-label='professores'>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell width={48}>
                           <Checkbox
-                            checked={selected.includes(r.id)}
-                            onChange={e => toggleOne(r.id, e.target.checked)}
+                            checked={selected.length > 0 && selected.length === filtered.length}
+                            indeterminate={selected.length > 0 && selected.length < filtered.length}
+                            onChange={e => toggleAll(e.target.checked)}
                           />
                         </TableCell>
-                        <TableCell>{r.full_name || '—'}</TableCell>
-                        <TableCell>{r.email}</TableCell>
+                        <TableCell>Nome</TableCell>
+                        <TableCell>E-mail</TableCell>
+                        <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>Área</TableCell>
+                        <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>Departamento</TableCell>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </Box>
+                    </TableHead>
+                    <TableBody>
+                      {filtered.map(r => (
+                        <TableRow key={r.id} hover>
+                          <TableCell>
+                            <Checkbox
+                              checked={selected.includes(r.id)}
+                              onChange={e => toggleOne(r.id, e.target.checked)}
+                            />
+                          </TableCell>
+                          <TableCell>{r.full_name || '—'}</TableCell>
+                          <TableCell
+                            sx={{ maxWidth: 320, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}
+                          >
+                            {r.email}
+                          </TableCell>
+                          <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>{r.area || '—'}</TableCell>
+                          <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>{r.dept || '—'}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
 
               {/* ações */}
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}>
-                <Button variant='outlined' startIcon={<ContentCopyIcon />} onClick={copyList}>
-                  Copiar lista
-                </Button>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ xs: 'stretch', md: 'center' }}>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} flexWrap='wrap'>
+                  <Button variant='outlined' startIcon={<ContentCopyIcon />} onClick={copyList} fullWidth={isMobile}>
+                    Copiar lista
+                  </Button>
 
-                <Button color='inherit' onClick={removeSelected}>
-                  Remover selecionados
-                </Button>
+                  <Button color='inherit' onClick={removeSelected} fullWidth={isMobile}>
+                    Remover selecionados
+                  </Button>
+                </Stack>
 
                 <Box flexGrow={1} />
 
-                <Stack direction='row' spacing={2} alignItems='center'>
-                  <Checkbox checked={testMode} onChange={e => setTestMode(e.target.checked)} />
-                  <Typography variant='body2'>Modo teste</Typography>
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  spacing={2}
+                  alignItems={{ xs: 'flex-start', sm: 'center' }}
+                >
+                  <Stack direction='row' spacing={1} alignItems='center'>
+                    <Checkbox checked={testMode} onChange={e => setTestMode(e.target.checked)} sx={{ ml: -1 }} />
+                    <Typography variant='body2'>Modo teste</Typography>
+                  </Stack>
+
                   <TextField
                     size='small'
                     label='Enviar teste para'
                     value={testEmail}
                     onChange={e => setTestEmail(e.target.value)}
-                    sx={{ minWidth: 320 }}
+                    sx={{ minWidth: { xs: '100%', sm: 280 } }}
+                    fullWidth={isMobile}
                   />
                   <Tooltip title='Envia somente para o e-mail de teste quando ativado'>
                     <Chip label='Somente teste' />
                   </Tooltip>
                 </Stack>
 
-                <Stack direction='row' spacing={2}>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                   <Button
                     color='inherit'
                     startIcon={<RestartAltIcon />}
                     onClick={() => setSelected(filtered.map(p => p.id))}
+                    fullWidth={isMobile}
                   >
                     Selecionar filtrados
                   </Button>
@@ -493,6 +582,7 @@ export default function PreCadastroProfessoresPage() {
                     startIcon={<SendIcon />}
                     disabled={sending || selected.length === 0}
                     onClick={handleSend}
+                    fullWidth={isMobile}
                   >
                     {sending ? 'Enviando…' : `Enviar (${selected.length})`}
                   </Button>
