@@ -5,7 +5,7 @@ import { useState } from 'react'
 
 // Next Imports
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 
 // MUI Imports
 import Card from '@mui/material/Card'
@@ -19,6 +19,7 @@ import Button from '@mui/material/Button'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import Divider from '@mui/material/Divider'
 import ButtonGroup from '@mui/material/ButtonGroup'
+import Alert from '@mui/material/Alert'
 
 // Component Imports
 import Logo from '@components/layout/shared/Logo'
@@ -46,8 +47,12 @@ const Login = ({ mode }) => {
 
   // Hooks
   const router = useRouter()
+  const params = useSearchParams()
   const authBackground = useImageVariant(mode, lightImg, darkImg)
   const handleClickShowPassword = () => setIsPasswordShown(show => !show)
+
+  // Detecta retorno do cadastro
+  const signupOk = params?.get('signup') === '1'
 
   const handleSubmit = async e => {
     e.preventDefault()
@@ -69,26 +74,34 @@ const Login = ({ mode }) => {
       }
 
       // valida papel após login
-      const { role: detectedRole } = await fetchCurrentProfile()
+      let detectedRole = null
 
-      if (role === 'student' && detectedRole !== 'student') {
+      try {
+        const prof = await fetchCurrentProfile()
+
+        detectedRole = prof?.role || null
+      } catch {
+        // segue para fallback
+      }
+
+      if (role === 'student' && detectedRole && detectedRole !== 'student') {
         setErrorMsg('Esta conta não é de aluno. Escolha "Sou Professor" ou use outra conta.')
         setLoading(false)
 
         return
       }
 
-      if (role === 'professor' && detectedRole !== 'professor') {
+      if (role === 'professor' && detectedRole && detectedRole !== 'professor') {
         setErrorMsg('Esta conta não é de professor. Escolha "Sou Aluno" ou use outra conta.')
         setLoading(false)
 
         return
       }
 
-      // redireciona por papel
+      // redireciona por papel (com fallbacks)
       if (detectedRole === 'professor') router.push('/')
       else if (detectedRole === 'student') router.push('/alunos/notas')
-      else router.push('/') // fallback
+      else router.push('/')
     } catch {
       setErrorMsg('Não foi possível entrar. Tente novamente.')
       setLoading(false)
@@ -125,6 +138,9 @@ const Login = ({ mode }) => {
               </Typography>
             </div>
 
+            {/* Aviso pós-cadastro */}
+            {signupOk && <Alert severity='success'>Conta criada com sucesso!</Alert>}
+
             {/* Seletor de papel */}
             <ButtonGroup fullWidth variant='outlined' className='mb-2'>
               <Button onClick={() => setRole('student')} variant={role === 'student' ? 'contained' : 'outlined'}>
@@ -142,8 +158,9 @@ const Login = ({ mode }) => {
             ) : null}
 
             <form noValidate autoComplete='off' onSubmit={handleSubmit} className='flex flex-col gap-5'>
-              <TextField autoFocus fullWidth label='E-mail' type='email' name='email' />
+              <TextField autoFocus required fullWidth label='E-mail' type='email' name='email' />
               <TextField
+                required
                 fullWidth
                 label='Senha'
                 name='password'
@@ -182,43 +199,6 @@ const Login = ({ mode }) => {
                 <Typography component={Link} href='/register' color='primary'>
                   Criar conta
                 </Typography>
-              </div>
-
-              <Divider className='gap-3'>ou</Divider>
-
-              <div className='flex justify-center items-center gap-2'>
-                <IconButton
-                  size='small'
-                  className='text-github'
-                  aria-label='Entrar com GitHub'
-                  onClick={() => handleOAuth('github')}
-                >
-                  <i className='ri-github-fill' />
-                </IconButton>
-                <IconButton
-                  size='small'
-                  className='text-googlePlus'
-                  aria-label='Entrar com Google'
-                  onClick={() => handleOAuth('google')}
-                >
-                  <i className='ri-google-fill' />
-                </IconButton>
-                <IconButton
-                  size='small'
-                  className='text-facebook'
-                  aria-label='Entrar com Facebook'
-                  onClick={() => handleOAuth('facebook')}
-                >
-                  <i className='ri-facebook-fill' />
-                </IconButton>
-                <IconButton
-                  size='small'
-                  className='text-twitter'
-                  aria-label='Entrar com X/Twitter'
-                  onClick={() => handleOAuth('twitter')}
-                >
-                  <i className='ri-twitter-fill' />
-                </IconButton>
               </div>
             </form>
           </div>

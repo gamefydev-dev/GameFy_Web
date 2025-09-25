@@ -59,11 +59,26 @@ const Register = ({ mode }) => {
       const username = (formData.get('username') || '').toString().trim()
       const email = (formData.get('email') || '').toString().trim().toLowerCase()
       const password = (formData.get('password') || '').toString()
+      const termsAccepted = formData.get('terms') === 'on' // obrigatório
+
+      if (!termsAccepted) {
+        setLoading(false)
+        setErrorMsg('Você precisa aceitar a Política de Privacidade e os Termos de Uso.')
+
+        return
+      }
 
       const name = username
 
       if (role === 'student') {
-        const ra = (formData.get('ra') || '').toString().trim()
+        const ra = (formData.get('ra') || '').toString().trim() // obrigatório para aluno
+
+        if (!ra) {
+          setLoading(false)
+          setErrorMsg('RA é obrigatório para cadastro de aluno.')
+
+          return
+        }
 
         const { error } = await signUpStudent({
           email,
@@ -72,8 +87,10 @@ const Register = ({ mode }) => {
         })
 
         if (error) throw error
+
+        // Mensagem opcional e redirecionamento imediato para login
         setSuccessMsg('Conta de aluno criada! Verifique seu e-mail para confirmar.')
-        setLoading(false)
+        router.push('/login?signup=1') // ✅ redireciona após “bater no banco”
 
         return
       }
@@ -98,7 +115,7 @@ const Register = ({ mode }) => {
       if (error) throw error
 
       setSuccessMsg('Conta de professor criada! Verifique seu e-mail para confirmar.')
-      setLoading(false)
+      router.push('/login?signup=1') // ✅ redireciona após sucesso
     } catch (err) {
       setLoading(false)
       setErrorMsg(err?.message || 'Não foi possível criar a conta. Tente novamente.')
@@ -190,12 +207,12 @@ const Register = ({ mode }) => {
               {/* Campos extras quando Aluno */}
               {role === 'student' && (
                 <>
-                  <TextField fullWidth label='RA (opcional)' name='ra' />
+                  <TextField fullWidth required label='RA' name='ra' />
                 </>
               )}
 
               <FormControlLabel
-                control={<Checkbox />}
+                control={<Checkbox name='terms' required />}
                 label={
                   <>
                     <span>Concordo com a </span>
