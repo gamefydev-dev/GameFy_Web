@@ -91,7 +91,7 @@ export async function signUp({ email, password, metadata = {}, redirectPath = '/
     email,
     password,
     options: {
-      data: metadata, // <-- garante que role/name/etc vão para raw_user_meta_data
+      data: metadata, // garante que role/name/etc vão para raw_user_meta_data
       emailRedirectTo: getRedirectURL(redirectPath)
     }
   })
@@ -129,7 +129,7 @@ export async function signUpStudent({ email, password, metadata = {} }) {
 
   if (userId) {
     const insert = {
-      id: userId,
+      id: userId, // PK = id
       email,
       name: metadata?.name ?? null,
       ra: metadata?.ra ?? null,
@@ -158,13 +158,23 @@ export async function signUpProfessor({ email, password, metadata = {} }) {
   const userId = data?.user?.id
 
   if (userId) {
+    const nowIso = new Date().toISOString()
+
     const insert = {
-      user_id: userId, // padronize sua tabela para usar user_id (PK/FK p/ auth.users)
+      id: userId, // PK = id (igual auth.users.id)
       email,
-      name: metadata?.name ?? metadata?.username ?? email
+      name: metadata?.name ?? metadata?.username ?? email,
+      role: 'Professor',
+      avatar_url: `${userId}/avatar.jpeg`,
+      is_active: true,
+      created_at: nowIso,
+      updated_at: nowIso
+
+      // outros campos opcionais do seu schema podem ficar null
+      // department, address, state, country, language, timezone, currency...
     }
 
-    const { error: err2 } = await supabase.from('professors').upsert(insert, { onConflict: 'user_id' })
+    const { error: err2 } = await supabase.from('professors').upsert(insert, { onConflict: 'id' })
 
     if (err2) return { data, error: err2 }
   }
@@ -172,7 +182,7 @@ export async function signUpProfessor({ email, password, metadata = {} }) {
   return { data, error: null }
 }
 
-// Busca o perfil (student ou professor)
+// Busca o perfil (student/professor)
 export async function fetchCurrentProfile() {
   const { data: authUser } = await supabase.auth.getUser()
   const user = authUser?.user ?? null
@@ -184,8 +194,8 @@ export async function fetchCurrentProfile() {
 
   if (s) return { role: 'student', profile: s }
 
-  // professors: PK = user_id (padronizado)
-  const { data: p } = await supabase.from('professors').select('*').eq('user_id', user.id).maybeSingle()
+  // professors: PK = id
+  const { data: p } = await supabase.from('professors').select('*').eq('id', user.id).maybeSingle()
 
   if (p) return { role: 'professor', profile: p }
 
