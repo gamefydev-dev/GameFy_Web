@@ -325,7 +325,7 @@ export default function PageAlunoNotas() {
         .from('students_evaluation')
         .select('role_key, score, comment')
         .eq('group_id', gid)
-        .eq('student_id', sId) // student_id é FK para auth.users
+        .eq('student_id', sId)
         .in('role_key', keysIndiv)
 
       ;(se1 || []).forEach(r => {
@@ -380,28 +380,52 @@ export default function PageAlunoNotas() {
       setMyByRole(indiv)
       setMyCommentsByRole(indivComments)
 
-      // resolver nomes dos professores (para feedbacks de grupo e fallback individual)
+      // ===================== RESOLVER NOMES DOS PROFESSORES =====================
+      // Regras:
+      // 1) Tentar em public.professors (name/email)
+      // 2) Fallback em profiles (full_name/email)
       const allIds = new Set()
 
       fbAggreg.forEach(({ e1, e2 }) => {
         e1.forEach(f => f.evaluatorId && allIds.add(f.evaluatorId))
         e2.forEach(f => f.evaluatorId && allIds.add(f.evaluatorId))
       })
-      let namesMap = new Map()
+
+      const namesMap = new Map()
 
       if (allIds.size) {
+        const ids = Array.from(allIds)
+
+        // 1) Professors
         try {
-          const { data: profs } = await supabase
+          const { data: profRows, error: profErr } = await supabase
             .from('professors')
-            .select('id, full_name, email')
-            .in('id', Array.from(allIds))
+            .select('id, name, email')
+            .in('id', ids)
 
-          ;(profs || []).forEach(p => {
-            const nm = p.full_name || p.email || `Professor ${p.id}`
+          if (!profErr && profRows) {
+            profRows.forEach(p => {
+              const nm = p?.name?.trim?.() || p?.email || `Professor ${p.id}`
 
-            namesMap.set(p.id, nm)
-          })
+              namesMap.set(p.id, nm)
+            })
+          }
         } catch {}
+
+        // 2) Profiles (apenas para IDs ainda sem nome)
+        const missing = ids.filter(id => !namesMap.has(id))
+
+        if (missing.length) {
+          try {
+            const { data: profs } = await supabase.from('profiles').select('id, full_name, email').in('id', missing)
+
+            ;(profs || []).forEach(p => {
+              const nm = p?.full_name?.trim?.() || p?.email || `Professor ${p.id}`
+
+              namesMap.set(p.id, nm)
+            })
+          } catch {}
+        }
       }
 
       const fbFinal = new Map()
@@ -763,11 +787,9 @@ export default function PageAlunoNotas() {
                   <TableRow>
                     <TableCell>Disciplina</TableCell>
                     <TableCell align='right'>E1 (grupo)</TableCell>
-                    <TableCell align='right'>E1 (individual)</TableCell>
                     <TableCell align='right'>E1 que vale</TableCell>
                     <TableCell align='right'>Feedback E1 (resumo)</TableCell>
                     <TableCell align='right'>E2 (grupo)</TableCell>
-                    <TableCell align='right'>E2 (individual)</TableCell>
                     <TableCell align='right'>E2 que vale</TableCell>
                     <TableCell align='right'>Feedback E2 (resumo)</TableCell>
                     <TableCell align='right'>Soma ponderada</TableCell>

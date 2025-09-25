@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useRef } from 'react'
 
 import {
   Grid,
@@ -468,35 +468,39 @@ export default function PageAvaliacoes() {
     }
   }
 
-  // Individual → students_evaluation (nota + comentário) — usa SEMPRE auth.users.id
+  // Individual → salvar SEMPRE em public.evaluations
+  // Uma linha por (group_id, evaluator_id=prof, evaluator_role=delivery_*:subject_*:student_<UUID>)
   const upsertStudentEvaluation = async ({ groupId, studentId, roleKey, value, text }) => {
     if (!studentId) throw new Error('studentId não resolvido (UUID do auth.users)')
 
     const payload = {
       group_id: groupId,
-      student_id: String(studentId),
-      role_key: String(roleKey),
+      evaluator_id: user.id, // explícito (há trigger que preenche também)
+      evaluator_role: String(roleKey), // ex.: delivery_1:subject_123:student_<UUID>
       score: round2(clamp10(value)),
       comment: norm(text || '')
     }
 
-    // caminho seguro p/ quem não tem constraint unique (você tem, mas mantemos)
+    // idempotente pelo índice único (group_id, evaluator_id, evaluator_role)
     const { data: existing, error: selErr } = await supabase
-      .from('students_evaluation')
+      .from('evaluations')
       .select('id')
       .eq('group_id', groupId)
-      .eq('student_id', String(studentId))
-      .eq('role_key', String(roleKey))
+      .eq('evaluator_id', user.id)
+      .eq('evaluator_role', String(roleKey))
       .maybeSingle()
 
     if (selErr) throw selErr
 
     if (existing?.id) {
-      const { error } = await supabase.from('students_evaluation').update(payload).eq('id', existing.id)
+      const { error } = await supabase
+        .from('evaluations')
+        .update({ score: payload.score, comment: payload.comment })
+        .eq('id', existing.id)
 
       if (error) throw error
     } else {
-      const { error } = await supabase.from('students_evaluation').insert(payload)
+      const { error } = await supabase.from('evaluations').insert(payload)
 
       if (error) throw error
     }
@@ -504,25 +508,20 @@ export default function PageAvaliacoes() {
 
   // ---------------------------------- Resolver CHAVE do aluno (sempre auth.users.id) ----------------------------------
   const resolveStudentKey = async member => {
-    // 1) veio diretamente do membership?
     if (member?.student_user_id) return String(member.student_user_id)
 
-    // 2) veio student_id possivelmente de students.id -> procurar user_id
     if (member?.student_id) {
       const { data: s1 } = await supabase.from('students').select('user_id').eq('id', member.student_id).maybeSingle()
 
       if (s1?.user_id) return String(s1.user_id)
     }
 
-    // 3) por e-mail na tabela students
     const email = (member?.email || '').toLowerCase().trim()
 
     if (email) {
       const { data: s2 } = await supabase.from('students').select('user_id').ilike('email', email).maybeSingle()
 
       if (s2?.user_id) return String(s2.user_id)
-
-      // 4) fallback por profiles (id = auth.users.id)
       const { data: p } = await supabase.from('profiles').select('id').ilike('email', email).maybeSingle()
 
       if (p?.id) return String(p.id)
@@ -551,44 +550,83 @@ export default function PageAvaliacoes() {
     )
   }
 
-  const NumberField = ({ value, onChange, step = 0.1 }) => {
-    const inc = () => onChange(clamp10(round2(Number(value ?? 0) + step)))
-    const dec = () => onChange(clamp10(round2(Number(value ?? 0) - step)))
+  // Campo de nota do GRUPO — digitação fluida, vírgula/ponto, normaliza no blur/Enter
+  const NumberField = ({
+    value,
+    onChange,
+    label = 'Nota (0–10)',
+    helperText = 'Aceita decimais com vírgula (ex.: 9,5)'
+  }) => {
+    const inputRef = useRef(null)
+    const [draft, setDraft] = useState(value == null ? '' : String(value).replace('.', ','))
 
-    const onType = e => {
-      const raw = (e.target.value ?? '').toString().replace(',', '.')
-      const parsed = Number(raw)
+    useEffect(() => {
+      if (document.activeElement !== inputRef.current) {
+        setDraft(value == null ? '' : String(value).replace('.', ','))
+      }
+    }, [value])
 
-      onChange(Number.isNaN(parsed) ? 0 : parsed)
+    const cleanForTyping = s => {
+      let raw = String(s ?? '').replace(/[^\d.,]/g, '')
+      const firstComma = raw.indexOf(',')
+      const firstDot = raw.indexOf('.')
+      const firstSep = firstComma === -1 ? firstDot : firstDot === -1 ? firstComma : Math.min(firstComma, firstDot)
+
+      if (firstSep !== -1) {
+        const head = raw.slice(0, firstSep + 1)
+        const tail = raw.slice(firstSep + 1).replace(/[.,]/g, '')
+
+        raw = head + tail
+      }
+
+      return raw
+    }
+
+    const parseDraft = s => {
+      const normalized = String(s ?? '')
+        .replace(/\./g, '')
+        .replace(',', '.')
+
+      const num = Number(normalized)
+
+      return Number.isFinite(num) ? num : null
+    }
+
+    const commit = () => {
+      const num = parseDraft(draft)
+      const safe = num == null ? 0 : clamp10(round2(num))
+
+      onChange?.(safe)
+      setDraft(String(safe).replace('.', ','))
     }
 
     return (
       <TextField
+        inputRef={inputRef}
         fullWidth
         size='small'
-        type='number'
+        type='text'
         inputMode='decimal'
-        label='Nota (0–10)'
-        helperText='Aceita decimais com vírgula (ex.: 9,5)'
-        value={value}
-        onChange={onType}
-        onBlur={() => onChange(clamp10(round2(Number(value ?? 0))))}
+        label={label}
+        helperText={helperText}
+        value={draft}
+        onChange={e => setDraft(cleanForTyping(e.target.value))}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            commit()
+          } else if (e.key === 'Escape') {
+            setDraft(value == null ? '' : String(value).replace('.', ','))
+          }
+        }}
+        onWheel={e => e.currentTarget.blur()}
         InputProps={{
-          startAdornment: (
-            <InputAdornment position='start'>
-              <IconButton size='small' onClick={dec}>
-                <RemoveIcon fontSize='small' />
-              </IconButton>
-            </InputAdornment>
-          ),
           endAdornment: (
             <InputAdornment position='end'>
               <Typography variant='caption' sx={{ mr: 1 }}>
                 /10
               </Typography>
-              <IconButton size='small' onClick={inc}>
-                <AddIcon fontSize='small' />
-              </IconButton>
             </InputAdornment>
           )
         }}
@@ -597,32 +635,85 @@ export default function PageAvaliacoes() {
     )
   }
 
+  // Campo de nota INDIVIDUAL — comportamento idêntico ao do grupo
   const DecimalFieldBR = ({ value, onChange, label = 'Nota', width = 140 }) => {
-    const handleType = e => {
-      const raw = (e.target.value ?? '').toString().replace(',', '.')
-      const parsed = Number(raw)
-      const val = Number.isNaN(parsed) ? '' : parsed
+    const inputRef = useRef(null)
+    const [draft, setDraft] = useState(value == null || value === '' ? '' : String(value).replace('.', ','))
 
-      onChange(val === '' ? '' : clamp10(round2(val)))
+    useEffect(() => {
+      if (document.activeElement !== inputRef.current) {
+        setDraft(value == null || value === '' ? '' : String(value).replace('.', ','))
+      }
+    }, [value])
+
+    const cleanForTyping = s => {
+      let raw = String(s ?? '').replace(/[^\d.,]/g, '')
+      const firstComma = raw.indexOf(',')
+      const firstDot = raw.indexOf('.')
+      const firstSep = firstComma === -1 ? firstDot : firstDot === -1 ? firstComma : Math.min(firstComma, firstDot)
+
+      if (firstSep !== -1) {
+        const head = raw.slice(0, firstSep + 1)
+        const tail = raw.slice(firstSep + 1).replace(/[.,]/g, '')
+
+        raw = head + tail
+      }
+
+      return raw
     }
 
-    const handleBlur = () => {
-      const v = value === '' ? '' : Number(value ?? 0)
+    const parseDraft = s => {
+      const normalized = String(s ?? '')
+        .replace(/\./g, '')
+        .replace(',', '.')
 
-      onChange(v === '' ? '' : clamp10(round2(v)))
+      const num = Number(normalized)
+
+      return Number.isFinite(num) ? num : null
+    }
+
+    const commit = () => {
+      if (draft === '') {
+        onChange?.('')
+
+        return
+      }
+
+      const num = parseDraft(draft)
+      const safe = num == null ? '' : clamp10(round2(num))
+
+      onChange?.(safe === '' ? '' : safe)
+      setDraft(safe === '' ? '' : String(safe).replace('.', ','))
     }
 
     return (
       <TextField
+        inputRef={inputRef}
         size='small'
-        type='number'
+        type='text'
         inputMode='decimal'
         label={label}
-        value={value === '' ? '' : String(value)}
-        onChange={handleType}
-        onBlur={handleBlur}
+        value={draft}
+        onChange={e => setDraft(cleanForTyping(e.target.value))}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            commit()
+          } else if (e.key === 'Escape') {
+            setDraft(value == null || value === '' ? '' : String(value).replace('.', ','))
+          }
+        }}
         placeholder='em branco = usa nota do grupo'
-        InputProps={{ inputProps: { step: 0.1, min: 0, max: 10 } }}
+        InputProps={{
+          endAdornment: (
+            <InputAdornment position='end'>
+              <Typography variant='caption' sx={{ mr: 1 }}>
+                /10
+              </Typography>
+            </InputAdornment>
+          )
+        }}
         sx={{ maxWidth: width }}
       />
     )
@@ -718,7 +809,7 @@ export default function PageAvaliacoes() {
           text: comment
         })
 
-        // 2) Individuais → students_evaluation (nota + feedback)
+        // 2) Individuais → evaluations (nota + feedback)
         const toSave = []
         const unresolved = []
 
@@ -767,7 +858,7 @@ export default function PageAvaliacoes() {
           await upsertEvaluation({ groupId: group.id, roleKey: key, value: val, text: comment })
         }
 
-        // Individuais (apresentação final) → students_evaluation (nota + feedback)
+        // Individuais (apresentação final) → evaluations (nota + feedback)
         const toSave = []
         const unresolved = []
 
