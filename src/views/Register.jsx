@@ -29,7 +29,7 @@ import Logo from '@components/layout/shared/Logo'
 import { useImageVariant } from '@core/hooks/useImageVariant'
 
 // Auth Helpers (Supabase)
-import { signUp, signInWithProvider, signUpStudent } from '@/libs/supabaseAuth'
+import { signInWithProvider, signUpStudent, signUpProfessor } from '@/libs/supabaseAuth'
 
 const Register = ({ mode }) => {
   // States
@@ -60,7 +60,6 @@ const Register = ({ mode }) => {
       const email = (formData.get('email') || '').toString().trim().toLowerCase()
       const password = (formData.get('password') || '').toString()
 
-      // nome "bonitinho"
       const name = username
 
       if (role === 'student') {
@@ -79,9 +78,7 @@ const Register = ({ mode }) => {
         return
       }
 
-      // ===== PROF ====
-      // regra de permissão: OU convite OU domínio institucional
-      // ajuste conforme sua regra real
+      // ===== PROF =====
       const invited = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('invite')
       const allowedDomain = email.endsWith('@fecap.br') || email.endsWith('@gamefy.education')
 
@@ -92,34 +89,13 @@ const Register = ({ mode }) => {
         return
       }
 
-      // cria usuário com metadata de professor
-      const { data, error } = await signUp({
+      const { error } = await signUpProfessor({
         email,
         password,
-        metadata: { username, name, role: 'professor' } // <- isso precisa virar options.data no helper
+        metadata: { username, name }
       })
 
       if (error) throw error
-
-      const userId = data?.user?.id
-
-      if (userId) {
-        await fetch('/api/create-professor-profile', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: userId, name, email })
-        })
-      }
-
-      if (error) throw error
-
-      // (Opcional) criar/atualizar perfil na sua tabela
-      // Se você tiver um endpoint Next API que insere em public.professors/profiles, descomente:
-      // await fetch('/api/create-professor-profile', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({ user_id: data?.user?.id, name, email })
-      // })
 
       setSuccessMsg('Conta de professor criada! Verifique seu e-mail para confirmar.')
       setLoading(false)
