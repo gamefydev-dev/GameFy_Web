@@ -23,7 +23,7 @@ const FooterContent = () => {
       <p>
         <span>{`© ${new Date().getFullYear()}, Desenvolvido`}</span>
         <span>{` por `}</span>
-        <Link href='https//gamefy.ia' target='_blank' className='text-primary'>
+        <Link href='https://www.gamefy.education/' target='_blank' className='text-primary'>
           GameFy
         </Link>
       </p>
