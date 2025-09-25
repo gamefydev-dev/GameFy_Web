@@ -57,45 +57,63 @@ const Register = ({ mode }) => {
     try {
       const formData = new FormData(e.currentTarget)
       const username = (formData.get('username') || '').toString().trim()
-      const email = (formData.get('email') || '').toString().trim()
+      const email = (formData.get('email') || '').toString().trim().toLowerCase()
       const password = (formData.get('password') || '').toString()
 
+      // nome "bonitinho"
+      const name = username
+
       if (role === 'student') {
-        // campos extras do aluno (opcionais aqui)
-        const name = (formData.get('name') || username || '').toString().trim()
         const ra = (formData.get('ra') || '').toString().trim()
-        const class_code = (formData.get('class_code') || '').toString().trim()
 
         const { error } = await signUpStudent({
           email,
           password,
-          metadata: { username, name, ra, class_code }
+          metadata: { username, name, ra }
         })
 
+        if (error) throw error
+        setSuccessMsg('Conta de aluno criada! Verifique seu e-mail para confirmar.')
         setLoading(false)
 
-        if (error) {
-          setErrorMsg(error.message)
-
-          return
-        }
-
-        setSuccessMsg('Conta de aluno criada!')
-
-        // opcional: redirecionar depois de alguns segundos
-        // setTimeout(() => router.push('/login'), 2000)
-      } else {
-        // professor: apenas informativo; criação é via admin
-        setLoading(false)
-        setSuccessMsg('')
-        setErrorMsg('')
-
-        // Opcional: você pode enviar mesmo assim para signUp mas não criar linha em professors
-        // Por padrão, vamos bloquear e instruir o fluxo correto:
+        return
       }
-    } catch {
+
+      // ===== PROF ====
+      // regra de permissão: OU convite OU domínio institucional
+      // ajuste conforme sua regra real
+      const invited = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('invite')
+      const allowedDomain = email.endsWith('@fecap.br') || email.endsWith('@gamefy.education')
+
+      if (!invited && !allowedDomain) {
+        setLoading(false)
+        setErrorMsg('Cadastro de professor permitido apenas com convite ou e-mail institucional.')
+
+        return
+      }
+
+      // cria usuário com metadata de professor
+      const { data, error } = await signUp({
+        email,
+        password,
+        metadata: { username, name, role: 'professor' }
+      })
+
+      if (error) throw error
+
+      // (Opcional) criar/atualizar perfil na sua tabela
+      // Se você tiver um endpoint Next API que insere em public.professors/profiles, descomente:
+      // await fetch('/api/create-professor-profile', {
+      //   method: 'POST',
+      //   headers: { 'Content-Type': 'application/json' },
+      //   body: JSON.stringify({ user_id: data?.user?.id, name, email })
+      // })
+
+      setSuccessMsg('Conta de professor criada! Verifique seu e-mail para confirmar.')
       setLoading(false)
-      setErrorMsg('Não foi possível criar a conta. Tente novamente.')
+    } catch (err) {
+      setLoading(false)
+      setErrorMsg(err?.message || 'Não foi possível criar a conta. Tente novamente.')
     }
   }
 
